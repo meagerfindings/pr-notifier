@@ -623,6 +623,34 @@ process_integration_reviews_only() {
     fi
     log "INFO" "Found $pr_count integration PR(s) requiring notification"
     
+    # Add new integration PRs to Code Reviews.md (with deduplication)
+    log "DEBUG" "Adding new integration PRs to Code Reviews.md..." >&2
+    local existing_urls new_tasks=""
+    existing_urls=$(get_existing_pr_urls)
+    
+    while IFS= read -r pr; do
+        local url
+        url=$(echo "$pr" | jq -r '.url')
+        
+        # Check if this PR is already tracked in Code Reviews.md
+        if ! echo "$existing_urls" | grep -q "$url"; then
+            local task_line
+            task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
+            new_tasks+="$task_line"$'\n'
+            log "DEBUG" "Added new integration task: $(echo "$pr" | jq -r '.title')" >&2
+        else
+            log "DEBUG" "Integration PR already tracked: $(echo "$pr" | jq -r '.title')" >&2
+        fi
+    done <<< "$(echo "$notification_prs" | jq -c '.[]' 2>/dev/null || true)"
+    
+    # Add new tasks to file if any were found
+    if [[ -n "$new_tasks" ]]; then
+        add_tasks_to_file "$new_tasks"
+        log "INFO" "Added new integration PRs to Code Reviews.md"
+    else
+        log "DEBUG" "No new integration PRs to add to Code Reviews.md" >&2
+    fi
+    
     local notifications_sent=0
     
     # Send notifications for each PR (if not already sent today)
