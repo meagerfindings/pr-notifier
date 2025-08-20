@@ -41,7 +41,7 @@ Tasks are prioritized to **unblock team members first**, then handle your own wo
 |----------|-----|----------|-------------|
 | Integration Reviews | `#integrations-review` | #urgent-important | Integration team PRs |
 | Follow-up Reviews | `#follow-up-review` | #urgent-important | PRs where you're mentioned |
-| General Reviews | `#general-review` | #not-urgent-important | Backend team PRs (max 10) |
+| General Reviews | `#general-review` | #not-urgent-important | Backend team PRs + individual requests (max 10) |
 | My PRs | `#my-pr` | #urgent-important | Your open PRs needing attention |
 
 ## Installation
@@ -210,6 +210,7 @@ The system determines if a PR needs your review by checking:
 - If the PR was updated since your last review
 - If there are unresolved comments mentioning you
 - Integration team assignment and involvement criteria
+- **Enhanced detection**: Both team assignments (`@CompanyCam/backend-engineers`) AND individual review requests (`@meagerfindings`)
 
 ## Contributing
 
