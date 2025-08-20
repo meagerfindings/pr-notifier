@@ -368,7 +368,10 @@ get_general_reviews() {
         --repo "$REPO" \
         --state open \
         --json number,title,author,url,updatedAt,reviewRequests 2>/dev/null | \
-        jq --arg user "$GITHUB_USER" 'map(select(.reviewRequests[] | select(.__typename == "Team" and .slug == "CompanyCam/backend-engineers")) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
+        jq --arg user "$GITHUB_USER" 'map(select(
+            (.reviewRequests[] | select(.__typename == "Team" and .slug == "CompanyCam/backend-engineers")) or
+            (.reviewRequests[] | select(.__typename == "User" and .login == $user))
+        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
 }
 
 # Get your PRs that need attention
