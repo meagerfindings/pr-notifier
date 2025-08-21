@@ -4,11 +4,12 @@ Automated GitHub pull request review monitoring and notification system for Comp
 
 ## Overview
 
-This system automatically queries GitHub for code review tasks and provides:
+This system automatically queries GitHub for code review tasks and personal mentions, providing:
 - **Centralized task management** in Obsidian with priority-based organization
-- **Real-time NTFY notifications** for urgent integration reviews
+- **Real-time NTFY notifications** for urgent integration reviews and personal mentions
 - **Smart deduplication** to prevent notification fatigue
 - **Enhanced integration detection** using multiple criteria
+- **Personal mention monitoring** for immediate awareness when you're needed
 
 ## Philosophy: "Pay It Forward" Leadership
 
@@ -23,12 +24,14 @@ Tasks are prioritized to **unblock team members first**, then handle your own wo
 ### 🔄 Automated Scheduling
 - **Daily full processing**: Monday-Friday at 7:50 AM MST
 - **Half-hourly integration alerts**: Every 30 minutes, 8 AM - 4 PM weekdays
+- **Mentions monitoring**: Every 10 minutes during business hours (8 AM - 4 PM, weekdays only)
 
 ### 📱 Smart Notifications
 - **NTFY push notifications** to `ntfy.tail001dd.ts.net/code-reviews`
-- **Priority levels**: Integration reviews marked as "high" priority
-- **Rich content**: Includes PR title, author, number, and direct link
-- **Deduplication**: Only notifies once per PR per day
+- **Priority levels**: Integration reviews and personal mentions marked as "high" priority
+- **Rich content**: Includes PR title, author, number, comment preview, and direct link
+- **Deduplication**: Only notifies once per PR/mention per day
+- **Personal mention filtering**: Only notifies for @meagerfindings mentions, not team mentions
 
 ### 🎯 Enhanced Integration Detection
 - PRs requesting `@CompanyCam/integrations-engineers` team review
@@ -74,6 +77,8 @@ Update the following variables in `github-review-monitor.sh`:
 ## Usage
 
 ### Manual Commands
+
+#### PR Review Monitoring
 ```bash
 # Full review processing
 ./github-review-monitor.sh
@@ -89,6 +94,18 @@ Update the following variables in `github-review-monitor.sh`:
 
 # Show help
 ./github-review-monitor.sh --help
+```
+
+#### Personal Mentions Monitoring
+```bash
+# Check for personal mentions
+./github-mentions-monitor.sh
+
+# Preview mentions without sending notifications
+./github-mentions-monitor.sh --dry-run --verbose
+
+# Show help
+./github-mentions-monitor.sh --help
 ```
 
 ### LaunchAgent Management
