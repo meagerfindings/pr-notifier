@@ -22,7 +22,7 @@ Tasks are prioritized to **unblock team members first**, then handle your own wo
 ## Features
 
 ### 🔄 Automated Scheduling
-- **Daily full processing**: Monday-Friday at 7:50 AM MST
+- **Daily full processing**: Monday-Friday at 8:01 AM MST
 - **Half-hourly integration alerts**: Every 30 minutes, 8 AM - 4 PM weekdays
 - **Mentions monitoring**: Every 10 minutes during business hours (8 AM - 4 PM, weekdays only)
 
