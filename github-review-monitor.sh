@@ -268,10 +268,10 @@ get_integration_reviews() {
     all_prs=$(gh pr list \
         --repo "$REPO" \
         --state open \
-        --json number,title,author,url,updatedAt,reviewRequests 2>/dev/null)
+        --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null)
     
     if [[ -n "$all_prs" ]]; then
-        all_prs=$(echo "$all_prs" | jq --arg user "$GITHUB_USER" 'map(select(.author.login == $user | not))' 2>/dev/null || echo "[]")
+        all_prs=$(echo "$all_prs" | jq --arg user "$GITHUB_USER" 'map(select(.author.login == $user | not) | select(.isDraft == false))' 2>/dev/null || echo "[]")
     else
         all_prs="[]"
     fi
@@ -356,8 +356,8 @@ get_followup_reviews() {
         --repo "$REPO" \
         --state open \
         --search "mentions:$GITHUB_USER -author:$GITHUB_USER" \
-        --json number,title,author,url,updatedAt 2>/dev/null | \
-        jq 'map({number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
+        --json number,title,author,url,updatedAt,isDraft 2>/dev/null | \
+        jq 'map(select(.isDraft == false) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
 }
 
 # Get general backend reviews
@@ -367,8 +367,8 @@ get_general_reviews() {
     gh pr list \
         --repo "$REPO" \
         --state open \
-        --json number,title,author,url,updatedAt,reviewRequests 2>/dev/null | \
-        jq --arg user "$GITHUB_USER" 'map(select(
+        --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null | \
+        jq --arg user "$GITHUB_USER" 'map(select(.isDraft == false) | select(
             (.reviewRequests[] | select(.__typename == "Team" and .slug == "CompanyCam/backend-engineers")) or
             (.reviewRequests[] | select(.__typename == "User" and .login == $user))
         ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
@@ -384,8 +384,8 @@ get_my_prs() {
         --repo "$REPO" \
         --state open \
         --author "$GITHUB_USER" \
-        --json number,title,url,updatedAt,comments,reviews 2>/dev/null | \
-        jq 'map({number, title, url, updated: .updatedAt, comment_count: (.comments | length), review_count: (.reviews | length)})' 2>/dev/null || echo "[]")
+        --json number,title,url,updatedAt,comments,reviews,isDraft 2>/dev/null | \
+        jq 'map(select(.isDraft == false) | {number, title, url, updated: .updatedAt, comment_count: (.comments | length), review_count: (.reviews | length)})' 2>/dev/null || echo "[]")
     
     # For now, return all your open PRs - we'll enhance this later to detect new activity
     echo "$my_prs"
