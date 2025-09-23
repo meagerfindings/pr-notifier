@@ -96,31 +96,20 @@ def is_integration_pr(pr_details):
 def call_claude_code_cli(prompt, additional_context=""):
     """Call Claude Code CLI for code review"""
     try:
-        # Check if claude-code is available
-        subprocess.run(["claude-code", "--version"], capture_output=True, check=True)
+        # Check if claude is available
+        subprocess.run(["claude", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        log("ERROR", "claude-code CLI not found. Please install Claude Code.")
+        log("ERROR", "claude CLI not found. Please install Claude Code.")
         return None
     
     try:
-        import tempfile
-        
-        # Create a temporary file with the complete prompt
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as temp_file:
-            temp_file.write(prompt)
-            if additional_context:
-                temp_file.write("\n\n")
-                temp_file.write(additional_context)
-            temp_file_path = temp_file.name
-        
-        # Call claude-code with the file
+        # Call claude directly with the prompt using -p flag
+        # Limit tools to Read only for security - we just want analysis, not file changes
         result = subprocess.run([
-            "claude-code", 
-            temp_file_path
+            "claude", 
+            "-p", prompt,
+            "--allowedTools", "Read"
         ], capture_output=True, text=True, check=True, timeout=120)  # 2 minute timeout
-        
-        # Clean up temp file
-        os.unlink(temp_file_path)
         
         if result.stdout.strip():
             log("DEBUG", "Claude Code CLI completed successfully")
@@ -140,13 +129,6 @@ def call_claude_code_cli(prompt, additional_context=""):
     except Exception as e:
         log("ERROR", f"Error calling Claude Code CLI: {e}")
         return None
-    finally:
-        # Ensure temp file is cleaned up even if there's an error
-        try:
-            if 'temp_file_path' in locals():
-                os.unlink(temp_file_path)
-        except:
-            pass
 
 def generate_review_content(pr_details, diff_content, is_integration):
     """Generate the review content using Claude"""
