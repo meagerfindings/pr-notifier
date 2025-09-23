@@ -407,7 +407,41 @@ create_task_line() {
     local formatted_title
     formatted_title=$(format_pr_title "$title")
     
-    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
+    # Check if automated review exists
+    local review_file="/Users/mat/Documents/Obsidian/CompanyCam Vault/Code Reviews/automated-reviews/PR-${number}-review.md"
+    if [[ -f "$review_file" ]]; then
+        # Link to automated review if it exists
+        local review_link="[🤖 Automated Review](file://${review_file// /%20})"
+        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $review_link 📅 $TODAY"
+    else
+        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
+    fi
+}
+
+# Trigger automated review for a PR
+trigger_automated_review() {
+    local pr_number="$1"
+    local pr_title="$2"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "INFO" "DRY RUN: Would trigger automated review for PR #$pr_number"
+        return 0
+    fi
+    
+    local python_script="$SCRIPT_DIR/claude-pr-reviewer.py"
+    if [[ ! -f "$python_script" ]]; then
+        log "WARN" "Claude PR reviewer script not found: $python_script"
+        return 1
+    fi
+    
+    log "INFO" "Triggering automated review for PR #$pr_number: $pr_title"
+    
+    # Run the Python script (synchronous to ensure completion)
+    if "$python_script" "$pr_number" >> "$LOG_FILE" 2>&1; then
+        log "INFO" "Automated review completed for PR #$pr_number"
+    else
+        log "WARN" "Automated review failed for PR #$pr_number (check logs)"
+    fi
 }
 
 # Add new tasks to Code Reviews.md
@@ -485,16 +519,22 @@ process_reviews() {
     
     if [[ "$integration_prs" != "[]" && -n "$integration_prs" ]]; then
         while IFS= read -r pr; do
-            local url
+            local url number title
             url=$(echo "$pr" | jq -r '.url')
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
             integration_pr_urls+="$url"$'\n'
             
             # Check if this PR is already tracked
             if ! echo "$existing_urls" | grep -q "$url"; then
+                # STEP 1: Always create the task first (reliability)
                 local task_line
                 task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
                 new_tasks+="$task_line"$'\n'
-                log "DEBUG" "Added integration review: $(echo "$pr" | jq -r '.title')"
+                log "DEBUG" "Added integration review: $title"
+                
+                # STEP 2: Trigger automated review (best effort)
+                trigger_automated_review "$number" "$title"
             fi
         done <<< "$(echo "$integration_prs" | jq -c '.[]' 2>/dev/null || true)"
     fi
@@ -527,17 +567,23 @@ process_reviews() {
     if [[ "$general_prs" != "[]" && -n "$general_prs" ]]; then
         local count=0
         while IFS= read -r pr && [[ $count -lt 10 ]]; do
-            local url
+            local url number title
             url=$(echo "$pr" | jq -r '.url')
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
             
             # Skip if already in existing URLs, integration PRs, or new tasks
             if ! echo "$existing_urls" | grep -q "$url" && \
                ! echo "$integration_pr_urls" | grep -q "$url" && \
                ! echo "$new_tasks" | grep -q "$url"; then
+                # STEP 1: Always create the task first (reliability)
                 local task_line
                 task_line=$(create_task_line "$pr" "general-review" "not-urgent-important")
                 new_tasks+="$task_line"$'\n'
-                log "DEBUG" "Added general review: $(echo "$pr" | jq -r '.title')"
+                log "DEBUG" "Added general review: $title"
+                
+                # STEP 2: Trigger automated review (best effort)
+                trigger_automated_review "$number" "$title"
                 ((count++))
             fi
         done <<< "$(echo "$general_prs" | jq -c '.[]' 2>/dev/null || true)"
@@ -633,17 +679,23 @@ process_integration_reviews_only() {
     existing_urls=$(get_existing_pr_urls)
     
     while IFS= read -r pr; do
-        local url
+        local url number title
         url=$(echo "$pr" | jq -r '.url')
+        number=$(echo "$pr" | jq -r '.number')
+        title=$(echo "$pr" | jq -r '.title')
         
         # Check if this PR is already tracked in Code Reviews.md
         if ! echo "$existing_urls" | grep -q "$url"; then
+            # STEP 1: Always create the task first (reliability)
             local task_line
             task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
             new_tasks+="$task_line"$'\n'
-            log "DEBUG" "Added new integration task: $(echo "$pr" | jq -r '.title')" >&2
+            log "DEBUG" "Added new integration task: $title" >&2
+            
+            # STEP 2: Trigger automated review (best effort)
+            trigger_automated_review "$number" "$title"
         else
-            log "DEBUG" "Integration PR already tracked: $(echo "$pr" | jq -r '.title')" >&2
+            log "DEBUG" "Integration PR already tracked: $title" >&2
         fi
     done <<< "$(echo "$notification_prs" | jq -c '.[]' 2>/dev/null || true)"
     

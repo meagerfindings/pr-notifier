@@ -10,60 +10,14 @@
         <string>/Users/mat/git/pr-notifier/github-review-monitor.sh</string>
     </array>
     
+    <!-- Schedule for daily at 8:01 AM -->
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Weekday</key>
-        <integer>1</integer>
         <key>Hour</key>
-        <integer>7</integer>
+        <integer>8</integer>
         <key>Minute</key>
-        <integer>50</integer>
+        <integer>1</integer>
     </dict>
-    
-    <!-- Additional intervals for Tuesday through Friday -->
-    <key>StartCalendarIntervals</key>
-    <array>
-        <dict>
-            <key>Weekday</key>
-            <integer>1</integer>
-            <key>Hour</key>
-            <integer>8</integer>
-            <key>Minute</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key>
-            <integer>2</integer>
-            <key>Hour</key>
-            <integer>8</integer>
-            <key>Minute</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key>
-            <integer>3</integer>
-            <key>Hour</key>
-            <integer>8</integer>
-            <key>Minute</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key>
-            <integer>4</integer>
-            <key>Hour</key>
-            <integer>8</integer>
-            <key>Minute</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key>
-            <integer>5</integer>
-            <key>Hour</key>
-            <integer>8</integer>
-            <key>Minute</key>
-            <integer>1</integer>
-        </dict>
-    </array>
     
     <key>StandardOutPath</key>
     <string>/tmp/github-review-monitor.out</string>

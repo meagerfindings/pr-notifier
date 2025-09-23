@@ -318,7 +318,7 @@ is_business_hours() {
     local current_day=$(date +%u)  # 1-7 (Monday-Sunday)
     
     # Only run Monday-Friday (1-5) between 8 AM and 4 PM (08-15)
-    if [[ $current_day -ge 1 && $current_day -le 5 && $current_hour -ge 8 && $current_hour -lt 16 ]]; then
+    if [[ $current_day -ge 1 && $current_day -le 5 && $((10#$current_hour)) -ge 8 && $((10#$current_hour)) -lt 16 ]]; then
         return 0  # Business hours
     else
         return 1  # Outside business hours
