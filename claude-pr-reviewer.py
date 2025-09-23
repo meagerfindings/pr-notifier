@@ -50,7 +50,7 @@ def get_pr_details(pr_number):
         result = subprocess.run([
             "gh", "pr", "view", str(pr_number),
             "--repo", REPO,
-            "--json", "title,author,url,body,reviewRequests"
+            "--json", "number,title,author,url,body,reviewRequests"
         ], capture_output=True, text=True, check=True)
         
         return json.loads(result.stdout)
