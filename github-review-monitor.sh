@@ -11,8 +11,8 @@ set -euo pipefail
 
 # Configuration
 readonly REPO="CompanyCam/Company-Cam-API"
-readonly OBSIDIAN_VAULT="/Users/mat/Documents/Obsidian/CompanyCam Vault"
-readonly CODE_REVIEWS_FILE="$OBSIDIAN_VAULT/Code Reviews.md"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CODE_REVIEWS_FILE="$SCRIPT_DIR/Code Reviews.md"
 readonly LOG_FILE="/tmp/github-review-monitor.log"
 readonly GITHUB_USER="meagerfindings"
 readonly INTEGRATION_TEAM_MEMBERS=("groovestation31785" "xrgloria" "rotondozer" "jarhartman")
@@ -202,9 +202,10 @@ check_prerequisites() {
         exit 1
     fi
     
-    # Check if Obsidian vault exists
-    if [[ ! -d "$OBSIDIAN_VAULT" ]]; then
-        log "ERROR" "Obsidian vault not found at: $OBSIDIAN_VAULT"
+    # Check if Code Reviews file symlink exists
+    if [[ ! -e "$CODE_REVIEWS_FILE" ]]; then
+        log "ERROR" "Code Reviews.md symlink not found at: $CODE_REVIEWS_FILE"
+        log "ERROR" "Run: ln -sf '/Users/mat/Documents/Obsidian/CompanyCam Vault/Code Reviews.md' '$CODE_REVIEWS_FILE'"
         exit 1
     fi
     
