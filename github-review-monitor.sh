@@ -410,8 +410,8 @@ create_task_line() {
     # Check if automated review exists
     local review_file="/Users/mat/Documents/Obsidian/CompanyCam Vault/Code Reviews/automated-reviews/PR-${number}-review.md"
     if [[ -f "$review_file" ]]; then
-        # Link to automated review if it exists
-        local review_link="[🤖 Automated Review](file://${review_file// /%20})"
+        # Link to automated review using Obsidian wiki link format
+        local review_link="[[PR-${number}-review|🤖 Automated Review]]"
         echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $review_link 📅 $TODAY"
     else
         echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
@@ -485,7 +485,11 @@ add_tasks_to_file() {
     
     # Clean up and replace the original file
     rm "$new_tasks_file"
-    mv "$temp_file" "$CODE_REVIEWS_FILE"
+
+    # IMPORTANT: Preserve symlink to Obsidian vault by copying over the target
+    # Using mv here would replace the symlink itself. cp follows symlinks and writes to the target file.
+    cp "$temp_file" "$CODE_REVIEWS_FILE"
+    rm "$temp_file"
     
     local task_count
     task_count=$(echo "$new_tasks" | grep -c "^- \[ \]" || echo "0")
@@ -500,7 +504,12 @@ update_existing_task_dates() {
     fi
     
     # Update dates on incomplete tasks (those starting with "- [ ]")
-    sed -i.bak "s/\(- \[ \] #task #code-review.*\)📅 [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}/\1📅 $TODAY/g" "$CODE_REVIEWS_FILE"
+    # Avoid sed -i which may replace the symlink itself; write to a temp file, then cp over
+    local tmp_update
+    tmp_update=$(mktemp)
+    sed "s/\(- \[ \] #task #code-review.*\)📅 [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}/\1📅 $TODAY/g" "$CODE_REVIEWS_FILE" > "$tmp_update"
+    cp "$tmp_update" "$CODE_REVIEWS_FILE"
+    rm "$tmp_update"
     
     log "DEBUG" "Updated dates on existing incomplete tasks"
 }
