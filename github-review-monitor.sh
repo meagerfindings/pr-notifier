@@ -392,7 +392,46 @@ get_my_prs() {
     echo "$my_prs"
 }
 
-# Create a task line for a PR
+# Create a task line for a PR with automated review link
+create_task_line_with_review() {
+    local pr_data="$1"
+    local category="$2"
+    local priority="$3"
+    
+    local number title author url
+    number=$(echo "$pr_data" | jq -r '.number')
+    title=$(echo "$pr_data" | jq -r '.title')
+    author=$(echo "$pr_data" | jq -r '.author')
+    url=$(echo "$pr_data" | jq -r '.url')
+    
+    local formatted_title
+    formatted_title=$(format_pr_title "$title")
+    
+    # Link to automated review using Obsidian wiki link format
+    local review_link="[[PR-${number}-review|🤖 Automated Review]]"
+    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $review_link 📅 $TODAY"
+}
+
+# Create a regular task line for a PR without automated review link
+create_task_line_without_review() {
+    local pr_data="$1"
+    local category="$2"
+    local priority="$3"
+    
+    local number title author url
+    number=$(echo "$pr_data" | jq -r '.number')
+    title=$(echo "$pr_data" | jq -r '.title')
+    author=$(echo "$pr_data" | jq -r '.author')
+    url=$(echo "$pr_data" | jq -r '.url')
+    
+    local formatted_title
+    formatted_title=$(format_pr_title "$title")
+    
+    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
+}
+
+# Legacy function - maintained for backward compatibility
+# Create a task line for a PR (checks if automated review exists)
 create_task_line() {
     local pr_data="$1"
     local category="$2"
@@ -419,6 +458,7 @@ create_task_line() {
 }
 
 # Trigger automated review for a PR
+# Returns: 0 = review generated, 2 = tool unavailable, other = error
 trigger_automated_review() {
     local pr_number="$1"
     local pr_title="$2"
@@ -436,12 +476,24 @@ trigger_automated_review() {
     
     log "INFO" "Triggering automated review for PR #$pr_number: $pr_title"
     
-    # Run the Python script (synchronous to ensure completion)
-    if "$python_script" "$pr_number" >> "$LOG_FILE" 2>&1; then
-        log "INFO" "Automated review completed for PR #$pr_number"
-    else
-        log "WARN" "Automated review failed for PR #$pr_number (check logs)"
-    fi
+    # Run the Python script and capture exit code
+    "$python_script" "$pr_number" >> "$LOG_FILE" 2>&1
+    local exit_code=$?
+    
+    case $exit_code in
+        0)
+            log "INFO" "Automated review completed successfully for PR #$pr_number"
+            return 0
+            ;;
+        2)
+            log "WARN" "Automated review tool unavailable for PR #$pr_number (will create regular task)"
+            return 2
+            ;;
+        *)
+            log "ERROR" "Automated review failed for PR #$pr_number with exit code $exit_code (check logs)"
+            return $exit_code
+            ;;
+    esac
 }
 
 # Add new tasks to Code Reviews.md
@@ -536,14 +588,25 @@ process_reviews() {
             
             # Check if this PR is already tracked
             if ! echo "$existing_urls" | grep -q "$url"; then
-                # STEP 1: Always create the task first (reliability)
+                # STEP 1: Trigger automated review first
                 local task_line
-                task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
+                if trigger_automated_review "$number" "$title"; then
+                    # Automated review succeeded - create task with review link
+                    task_line=$(create_task_line_with_review "$pr" "integrations-review" "urgent-important")
+                    log "DEBUG" "Added integration review with automated review: $title"
+                else
+                    local review_exit_code=$?
+                    if [[ $review_exit_code -eq 2 ]]; then
+                        # Tool unavailable - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                        log "DEBUG" "Added integration review (no automated review): $title"
+                    else
+                        # Other error - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                        log "DEBUG" "Added integration review (review failed): $title"
+                    fi
+                fi
                 new_tasks+="$task_line"$'\n'
-                log "DEBUG" "Added integration review: $title"
-                
-                # STEP 2: Trigger automated review (best effort)
-                trigger_automated_review "$number" "$title"
             fi
         done <<< "$(echo "$integration_prs" | jq -c '.[]' 2>/dev/null || true)"
     fi
@@ -585,14 +648,25 @@ process_reviews() {
             if ! echo "$existing_urls" | grep -q "$url" && \
                ! echo "$integration_pr_urls" | grep -q "$url" && \
                ! echo "$new_tasks" | grep -q "$url"; then
-                # STEP 1: Always create the task first (reliability)
+                # STEP 1: Trigger automated review first
                 local task_line
-                task_line=$(create_task_line "$pr" "general-review" "not-urgent-important")
+                if trigger_automated_review "$number" "$title"; then
+                    # Automated review succeeded - create task with review link
+                    task_line=$(create_task_line_with_review "$pr" "general-review" "not-urgent-important")
+                    log "DEBUG" "Added general review with automated review: $title"
+                else
+                    local review_exit_code=$?
+                    if [[ $review_exit_code -eq 2 ]]; then
+                        # Tool unavailable - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "general-review" "not-urgent-important")
+                        log "DEBUG" "Added general review (no automated review): $title"
+                    else
+                        # Other error - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "general-review" "not-urgent-important")
+                        log "DEBUG" "Added general review (review failed): $title"
+                    fi
+                fi
                 new_tasks+="$task_line"$'\n'
-                log "DEBUG" "Added general review: $title"
-                
-                # STEP 2: Trigger automated review (best effort)
-                trigger_automated_review "$number" "$title"
                 ((count++))
             fi
         done <<< "$(echo "$general_prs" | jq -c '.[]' 2>/dev/null || true)"
