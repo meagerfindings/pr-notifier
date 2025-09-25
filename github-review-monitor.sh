@@ -504,13 +504,47 @@ add_tasks_to_file() {
         log "DEBUG" "No new tasks to add"
         return 0
     fi
-    
+
+    # Preflight diagnostics: log symlink target and current ls -l
+    local link_target
+    link_target=$(readlink "$CODE_REVIEWS_FILE" 2>/dev/null || echo "")
+    if [[ -n "$link_target" ]]; then
+        log "DEBUG" "Preparing to update Code Reviews file: $CODE_REVIEWS_FILE (symlink target: $link_target)"
+    else
+        log "DEBUG" "Preparing to update Code Reviews file: $CODE_REVIEWS_FILE (no symlink)"
+    fi
+    ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+
+    # Small initial delay to reduce contention with Obsidian or other editors
+    log "DEBUG" "Initial 1s delay before updating Code Reviews file to avoid contention"
+    sleep 1
+
+    # Ensure the file is readable (handles transient locks) with retries
+    # Allow up to ~1 minute of retries: 1s,2s,4s,8s,8s,8s,8s,8s,8s,8s
+    local max_attempts=10
+    local attempt=1
+    local delay=1
+    while (( attempt <= max_attempts )); do
+        if [[ -r "$CODE_REVIEWS_FILE" ]] && cat "$CODE_REVIEWS_FILE" >/dev/null 2>&1; then
+            break
+        fi
+        log "WARN" "Code Reviews file not readable (attempt $attempt/$max_attempts); retrying in ${delay}s"
+        ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        sleep "$delay"
+        delay=$(( delay < 8 ? delay*2 : 8 ))
+        ((attempt++))
+    done
+    if (( attempt > max_attempts )); then
+        log "ERROR" "Code Reviews file not readable after $max_attempts attempts; aborting add"
+        return 1
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
         log "INFO" "DRY RUN: Would add the following tasks:"
         echo "$new_tasks"
         return 0
     fi
-    
+
     # Create a temporary file with the new content
     local temp_file
     temp_file=$(mktemp)
@@ -519,24 +553,44 @@ add_tasks_to_file() {
     local new_tasks_file
     new_tasks_file=$(mktemp)
     echo "$new_tasks" > "$new_tasks_file"
-    
-    # Read the existing file and insert new tasks after "## Active Reviews"
-    awk '
-        /^## Active Reviews/ {
-            print $0
-            print ""
-            while ((getline line < "'$new_tasks_file'") > 0) {
-                print line
+
+    # Read the existing file and insert new tasks after "## Active Reviews" with retries (handles transient access errors)
+    attempt=1
+    delay=1
+    local awk_ok=false
+    while (( attempt <= max_attempts )); do
+        awk '
+            /^## Active Reviews/ {
+                print $0
+                print ""
+                while ((getline line < "'"$new_tasks_file"'") > 0) {
+                    print line
+                }
+                close("'"$new_tasks_file"'")
+                print ""
+                next
             }
-            close("'$new_tasks_file'")
-            print ""
-            next
-        }
-        { print }
-    ' "$CODE_REVIEWS_FILE" > "$temp_file"
-    
-    # Clean up and replace the original file
-    rm "$new_tasks_file"
+            { print }
+        ' "$CODE_REVIEWS_FILE" > "$temp_file" && awk_ok=true || awk_ok=false
+
+        if $awk_ok; then
+            break
+        fi
+        log "WARN" "Failed to open/update Code Reviews file with awk (attempt $attempt/$max_attempts); retrying in ${delay}s"
+        ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        sleep "$delay"
+        delay=$(( delay < 8 ? delay*2 : 8 ))
+        ((attempt++))
+    done
+
+    # Clean up the temporary new tasks file now that awk is done
+    rm -f "$new_tasks_file"
+
+    if ! $awk_ok; then
+        rm -f "$temp_file"
+        log "ERROR" "Giving up updating Code Reviews file after $max_attempts attempts"
+        return 1
+    fi
 
     # IMPORTANT: Preserve symlink to Obsidian vault by copying over the target
     # Using mv here would replace the symlink itself. cp follows symlinks and writes to the target file.
@@ -550,19 +604,72 @@ add_tasks_to_file() {
 
 # Update dates on existing incomplete tasks
 update_existing_task_dates() {
+    # Preflight diagnostics and DRY RUN handling
     if [[ "$DRY_RUN" == "true" ]]; then
         log "INFO" "DRY RUN: Would update dates on existing incomplete tasks"
         return 0
     fi
-    
-    # Update dates on incomplete tasks (those starting with "- [ ]")
-    # Avoid sed -i which may replace the symlink itself; write to a temp file, then cp over
-    local tmp_update
-    tmp_update=$(mktemp)
-    sed "s/\(- \[ \] #task #code-review.*\)📅 [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}/\1📅 $TODAY/g" "$CODE_REVIEWS_FILE" > "$tmp_update"
-    cp "$tmp_update" "$CODE_REVIEWS_FILE"
-    rm "$tmp_update"
-    
+
+    local link_target
+    link_target=$(readlink "$CODE_REVIEWS_FILE" 2>/dev/null || echo "")
+    if [[ -n "$link_target" ]]; then
+        log "DEBUG" "Preparing to update task dates in: $CODE_REVIEWS_FILE (symlink target: $link_target)"
+    else
+        log "DEBUG" "Preparing to update task dates in: $CODE_REVIEWS_FILE (no symlink)"
+    fi
+    ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+
+    # Small initial delay to reduce contention with Obsidian or other editors
+    log "DEBUG" "Initial 1s delay before date update to avoid contention"
+    sleep 1
+
+    # Ensure file is readable with retries
+    # Allow up to ~1 minute of retries: 1s,2s,4s,8s,8s,8s,8s,8s,8s,8s
+    local max_attempts=10
+    local attempt=1
+    local delay=1
+    while (( attempt <= max_attempts )); do
+        if [[ -r "$CODE_REVIEWS_FILE" ]] && cat "$CODE_REVIEWS_FILE" >/dev/null 2>&1; then
+            break
+        fi
+        log "WARN" "Code Reviews file not readable for date update (attempt $attempt/$max_attempts); retrying in ${delay}s"
+        ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        sleep "$delay"
+        delay=$(( delay < 8 ? delay*2 : 8 ))
+        ((attempt++))
+    done
+    if (( attempt > max_attempts )); then
+        log "ERROR" "Code Reviews file not readable after $max_attempts attempts; aborting date update"
+        return 1
+    fi
+
+    # Update dates on incomplete tasks (those starting with "- [ ]") with retries
+    attempt=1
+    delay=1
+    local updated=false
+    while (( attempt <= max_attempts )); do
+        local tmp_update
+        tmp_update=$(mktemp)
+        if sed "s/\(- \[ \] #task #code-review.*\)📅 [0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}/\1📅 $TODAY/g" "$CODE_REVIEWS_FILE" > "$tmp_update" 2>>"$LOG_FILE"; then
+            if cp "$tmp_update" "$CODE_REVIEWS_FILE" 2>>"$LOG_FILE"; then
+                updated=true
+                rm -f "$tmp_update"
+                break
+            fi
+        fi
+        rm -f "$tmp_update"
+        log "WARN" "Failed to update dates (attempt $attempt/$max_attempts); retrying in ${delay}s"
+        ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        sleep "$delay"
+        delay=$(( delay < 8 ? delay*2 : 8 ))
+        ((attempt++))
+    done
+
+    if ! $updated; then
+        log "ERROR" "Giving up updating task dates after $max_attempts attempts"
+        return 1
+    fi
+
     log "DEBUG" "Updated dates on existing incomplete tasks"
 }
 
