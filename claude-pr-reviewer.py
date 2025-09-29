@@ -24,6 +24,7 @@ INTEGRATION_TEAM_MEMBERS = ["groovestation31785", "xrgloria", "rotondozer", "jar
 EXIT_SUCCESS = 0  # At least one review generated and saved
 EXIT_OTHER_ERROR = 1  # Other errors (GitHub API, filesystem, etc.)
 EXIT_TOOL_UNAVAILABLE = 2  # Claude CLI completely unavailable
+EXIT_SKIPPED_SIZE = 3  # Skipped due to small PR size (below threshold)
 
 def log(level, message):
     """Simple logging function"""
@@ -326,7 +327,7 @@ def main():
     line_count = get_pr_diff_stats(args.pr_number)
     if line_count < 10:
         log("INFO", f"Skipping review for PR #{args.pr_number} ({line_count} lines - below threshold)")
-        return 0
+        return EXIT_SKIPPED_SIZE
     
     # Check if integration PR
     is_integration = is_integration_pr(pr_details)

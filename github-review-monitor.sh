@@ -101,6 +101,30 @@ send_ntfy_notification() {
     fi
 }
 
+# Check if PR has enough lines to warrant automated review
+pr_meets_size_threshold() {
+    local pr_number="$1"
+
+    # Get PR diff statistics
+    local pr_stats
+    pr_stats=$(gh pr view "$pr_number" --repo "$REPO" --json additions,deletions 2>/dev/null || echo '{"additions":0,"deletions":0}')
+
+    local additions deletions total_lines
+    additions=$(echo "$pr_stats" | jq -r '.additions // 0' 2>/dev/null || echo "0")
+    deletions=$(echo "$pr_stats" | jq -r '.deletions // 0' 2>/dev/null || echo "0")
+    total_lines=$((additions + deletions))
+
+    log "DEBUG" "PR #$pr_number: $additions additions, $deletions deletions, $total_lines total lines"
+
+    # Return 0 (true) if PR meets threshold, 1 (false) if it doesn't
+    if [[ $total_lines -ge 10 ]]; then
+        return 0
+    else
+        log "DEBUG" "PR #$pr_number below size threshold ($total_lines lines < 10)"
+        return 1
+    fi
+}
+
 # Check if PR needs review (not already reviewed by user)
 pr_needs_review() {
     local pr_number="$1"
@@ -489,6 +513,10 @@ trigger_automated_review() {
             log "WARN" "Automated review tool unavailable for PR #$pr_number (will create regular task)"
             return 2
             ;;
+        3)
+            log "INFO" "Automated review skipped for PR #$pr_number (below size threshold)"
+            return 3
+            ;;
         *)
             log "ERROR" "Automated review failed for PR #$pr_number with exit code $exit_code (check logs)"
             return $exit_code
@@ -695,6 +723,12 @@ process_reviews() {
             
             # Check if this PR is already tracked
             if ! echo "$existing_urls" | grep -q "$url"; then
+                # Check size threshold first
+                if ! pr_meets_size_threshold "$number"; then
+                    log "DEBUG" "Skipping integration PR #$number: below size threshold"
+                    continue
+                fi
+
                 # STEP 1: Trigger automated review first
                 local task_line
                 if trigger_automated_review "$number" "$title"; then
@@ -707,6 +741,10 @@ process_reviews() {
                         # Tool unavailable - create regular task without link
                         task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
                         log "DEBUG" "Added integration review (no automated review): $title"
+                    elif [[ $review_exit_code -eq 3 ]]; then
+                        # Skipped due to size - don't create task at all
+                        log "DEBUG" "Skipping integration review task for PR #$number: below size threshold"
+                        continue
                     else
                         # Other error - create regular task without link
                         task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
@@ -755,6 +793,12 @@ process_reviews() {
             if ! echo "$existing_urls" | grep -q "$url" && \
                ! echo "$integration_pr_urls" | grep -q "$url" && \
                ! echo "$new_tasks" | grep -q "$url"; then
+                # Check size threshold first
+                if ! pr_meets_size_threshold "$number"; then
+                    log "DEBUG" "Skipping general PR #$number: below size threshold"
+                    continue
+                fi
+
                 # STEP 1: Trigger automated review first
                 local task_line
                 if trigger_automated_review "$number" "$title"; then
@@ -767,6 +811,10 @@ process_reviews() {
                         # Tool unavailable - create regular task without link
                         task_line=$(create_task_line_without_review "$pr" "general-review" "not-urgent-important")
                         log "DEBUG" "Added general review (no automated review): $title"
+                    elif [[ $review_exit_code -eq 3 ]]; then
+                        # Skipped due to size - don't create task at all
+                        log "DEBUG" "Skipping general review task for PR #$number: below size threshold"
+                        continue
                     else
                         # Other error - create regular task without link
                         task_line=$(create_task_line_without_review "$pr" "general-review" "not-urgent-important")
@@ -876,12 +924,18 @@ process_integration_reviews_only() {
         
         # Check if this PR is already tracked in Code Reviews.md
         if ! echo "$existing_urls" | grep -q "$url"; then
+            # Check size threshold first
+            if ! pr_meets_size_threshold "$number"; then
+                log "DEBUG" "Skipping integration PR #$number: below size threshold" >&2
+                continue
+            fi
+
             # STEP 1: Always create the task first (reliability)
             local task_line
             task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
             new_tasks+="$task_line"$'\n'
             log "DEBUG" "Added new integration task: $title" >&2
-            
+
             # STEP 2: Trigger automated review (best effort)
             trigger_automated_review "$number" "$title"
         else
