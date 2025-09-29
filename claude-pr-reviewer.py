@@ -280,7 +280,29 @@ This PR requires both general code review and integration expertise. Please revi
 
 """
     
-    content += f"""---
+    # Add conversational context section
+    content += f"""## Conversational Context for Claude
+
+<details>
+<summary>💬 Copy this code block to continue the review in a new Claude session</summary>
+
+```
+I'd like to continue reviewing PR #{pr_number}: {title}
+Author: {author}
+PR URL: {url}
+
+PR Description:
+{body if body else "No description provided"}
+
+Please fetch the latest diff for this PR using:
+gh pr diff {pr_number} --repo CompanyCam/Company-Cam-API
+
+Then continue with the code review discussion.
+```
+
+</details>
+
+---
 *Automated review generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
 *Author: {author}*
 """
