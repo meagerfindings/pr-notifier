@@ -10,13 +10,13 @@
         <string>/Users/mat/git/pr-notifier/github-review-monitor.sh</string>
     </array>
     
-    <!-- Schedule for daily at 8:01 AM -->
+    <!-- Schedule for daily at 7:51 AM -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>8</integer>
+        <integer>7</integer>
         <key>Minute</key>
-        <integer>1</integer>
+        <integer>51</integer>
     </dict>
     
     <key>StandardOutPath</key>
