@@ -556,8 +556,11 @@ add_tasks_to_file() {
         if [[ -r "$CODE_REVIEWS_FILE" ]] && cat "$CODE_REVIEWS_FILE" >/dev/null 2>&1; then
             break
         fi
+        # Log detailed error information
         log "WARN" "Code Reviews file not readable (attempt $attempt/$max_attempts); retrying in ${delay}s"
         ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        echo "[DEBUG] Test -r result: $([[ -r "$CODE_REVIEWS_FILE" ]] && echo 'PASS' || echo 'FAIL')" >> "$LOG_FILE"
+        cat "$CODE_REVIEWS_FILE" >/dev/null 2>>"$LOG_FILE" || echo "[DEBUG] Cat failed with exit code: $?" >> "$LOG_FILE"
         sleep "$delay"
         delay=$(( delay < 8 ? delay*2 : 8 ))
         ((attempt++))
@@ -660,8 +663,11 @@ update_existing_task_dates() {
         if [[ -r "$CODE_REVIEWS_FILE" ]] && cat "$CODE_REVIEWS_FILE" >/dev/null 2>&1; then
             break
         fi
+        # Log detailed error information
         log "WARN" "Code Reviews file not readable for date update (attempt $attempt/$max_attempts); retrying in ${delay}s"
         ls -l "$CODE_REVIEWS_FILE" >> "$LOG_FILE" 2>&1 || true
+        echo "[DEBUG] Test -r result: $([[ -r "$CODE_REVIEWS_FILE" ]] && echo 'PASS' || echo 'FAIL')" >> "$LOG_FILE"
+        cat "$CODE_REVIEWS_FILE" >/dev/null 2>>"$LOG_FILE" || echo "[DEBUG] Cat failed with exit code: $?" >> "$LOG_FILE"
         sleep "$delay"
         delay=$(( delay < 8 ? delay*2 : 8 ))
         ((attempt++))
