@@ -194,8 +194,9 @@ get_personal_mentions() {
                         created_at=$(echo "$comment" | jq -r '.created_at // empty')
                         
                         # Check if comment contains personal mention but not team mention
+                        log "DEBUG" "Checking comment from $user_login - has @$GITHUB_USER: $([[ "$comment_body" =~ @$GITHUB_USER ]] && echo 'YES' || echo 'NO'), has @CompanyCam: $([[ "$comment_body" =~ @CompanyCam/backend-engineers ]] && echo 'YES' || echo 'NO')"
                         if [[ "$comment_body" =~ @$GITHUB_USER ]] && ! [[ "$comment_body" =~ @CompanyCam/backend-engineers ]]; then
-                            log "DEBUG" "Found personal mention from $user_login"
+                            log "INFO" "✅ Found personal mention from $user_login (not team mention)"
                             
                             # Create mention object with comment details
                             local mention_with_comment subject_title
@@ -210,6 +211,8 @@ get_personal_mentions() {
                             
                             personal_mentions=$(echo "$personal_mentions" | jq --argjson new_mention "$mention_with_comment" '. + [$new_mention]')
                             break  # Found mention in this PR, no need to check more comments
+                        elif [[ "$comment_body" =~ @CompanyCam/backend-engineers ]]; then
+                            log "DEBUG" "⏭️  Skipping team mention from $user_login (not personal @$GITHUB_USER mention)"
                         fi
                     fi
                 done <<< "$all_comments"
@@ -279,9 +282,9 @@ View: $comment_url"
     done <<< "$(echo "$mentions" | jq -c '.[]' 2>/dev/null || true)"
     
     if [[ $notifications_sent -gt 0 ]]; then
-        log "INFO" "Sent $notifications_sent new mention notification(s)"
+        log "INFO" "✅ SUCCESS: Sent $notifications_sent new mention notification(s) to NTFY"
     else
-        log "INFO" "No new notifications sent (all mentions already notified today)"
+        log "INFO" "ℹ️  No new notifications sent (all mentions already notified today or filtered out)"
     fi
     
     log "INFO" "GitHub mentions monitoring completed"
