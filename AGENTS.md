@@ -5,6 +5,9 @@
 - **Setup**: `./setup.sh` (installs LaunchAgents and dependencies)
 - **Prerequisites**: Requires `gh` CLI authenticated and `jq` installed
 - **Test CLI failure**: `PATH="/usr/bin:/bin:/opt/homebrew/bin" ./github-review-monitor.sh --dry-run --verbose` (simulates Claude CLI unavailable)
+- **Debug API calls**: `GH_DEBUG=api ./github-review-monitor.sh --dry-run --verbose 2> /tmp/gh_api_debug.log`
+- **Debug JSON dumps**: `DEBUG_DUMP_JSON=1 ./github-review-monitor.sh --dry-run --verbose` (saves raw GitHub responses to /tmp/)
+- **Processing summary**: Look for "Processing summary" log line showing Integration/General/Existing/New task counts
 
 ## Architecture & Structure
 - **Type**: Shell script-based GitHub automation system for macOS LaunchAgents

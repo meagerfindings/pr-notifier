@@ -389,10 +389,22 @@ get_followup_reviews() {
 get_general_reviews() {
     log "DEBUG" "Fetching general backend reviews..." >&2
     
-    gh pr list \
+    local raw_response
+    raw_response=$(gh pr list \
         --repo "$REPO" \
         --state open \
-        --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null | \
+        --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null)
+    
+    # Debug: Save raw response if DEBUG_DUMP_JSON is set
+    if [[ "${DEBUG_DUMP_JSON:-}" == "1" ]]; then
+        echo "$raw_response" | tee "/tmp/review-monitor.fetch.general.$(date +%s).json" >&2
+    fi
+    
+    if [[ "$VERBOSE" == "true" ]]; then
+        log "DEBUG" "Raw general reviews count: $(echo "$raw_response" | jq 'length' 2>/dev/null || echo 'parse_error')" >&2
+    fi
+    
+    echo "$raw_response" | \
         jq --arg user "$GITHUB_USER" 'map(select(.isDraft == false) | select(
             (.reviewRequests[] | select(.__typename == "Team" and .slug == "CompanyCam/backend-engineers")) or
             (.reviewRequests[] | select(.__typename == "User" and .login == $user))
@@ -788,12 +800,25 @@ process_reviews() {
     general_prs=$(get_general_reviews)
     
     if [[ "$general_prs" != "[]" && -n "$general_prs" ]]; then
+        local total_general_count
+        total_general_count=$(echo "$general_prs" | jq 'length' 2>/dev/null || echo "0")
+        log "DEBUG" "Found $total_general_count general PRs before filtering" >&2
+        
         local count=0
         while IFS= read -r pr && [[ $count -lt 10 ]]; do
             local url number title
             url=$(echo "$pr" | jq -r '.url')
             number=$(echo "$pr" | jq -r '.number')
             title=$(echo "$pr" | jq -r '.title')
+            
+            log "DEBUG" "Evaluating general PR #$number: $title" >&2
+            
+            # Debug deduplication checks
+            local existing_check integration_check new_tasks_check
+            existing_check=$(echo "$existing_urls" | grep -q "$url" && echo "EXISTS" || echo "NEW")
+            integration_check=$(echo "$integration_pr_urls" | grep -q "$url" && echo "INTEGRATION" || echo "NOT_INTEGRATION")
+            new_tasks_check=$(echo "$new_tasks" | grep -q "$url" && echo "ALREADY_ADDED" || echo "NOT_ADDED")
+            log "DEBUG" "PR #$number dedup status: existing=$existing_check, integration=$integration_check, new_tasks=$new_tasks_check" >&2
             
             # Skip if already in existing URLs, integration PRs, or new tasks
             if ! echo "$existing_urls" | grep -q "$url" && \
@@ -863,6 +888,15 @@ process_reviews() {
     if [[ "$FORCE_UPDATE" == "true" ]] || [[ -n "$new_tasks" ]]; then
         update_existing_task_dates
     fi
+    
+    # Summary telemetry
+    local new_task_count integration_count general_count existing_count
+    new_task_count=$(echo "$new_tasks" | grep -c "^- \[ \]" || echo "0")
+    integration_count=$(echo "$integration_prs" | jq 'length' 2>/dev/null || echo "0")
+    general_count=$(echo "$general_prs" | jq 'length' 2>/dev/null || echo "0")
+    existing_count=$(echo "$existing_urls" | grep -c "github.com" || echo "0")
+    
+    log "INFO" "Processing summary: Integration PRs: $integration_count, General PRs: $general_count, Existing tasks: $existing_count, New tasks created: $new_task_count"
     
     log "INFO" "GitHub review processing completed"
 }
