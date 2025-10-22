@@ -878,13 +878,13 @@ process_reviews() {
     fi
     
     # Summary telemetry
-    local new_task_count integration_count general_count existing_count
+    local new_task_count integration_count general_count incomplete_reviews
     new_task_count=$(echo "$new_tasks" | grep -c "^- \[ \]" || echo "0")
     integration_count=$(echo "$integration_prs" | jq 'length' 2>/dev/null || echo "0")
     general_count=$(echo "$general_prs" | jq 'length' 2>/dev/null || echo "0")
-    existing_count=$(echo "$existing_urls" | grep -c "github.com" || echo "0")
-    
-    log "INFO" "Processing summary: Integration PRs: $integration_count, General PRs: $general_count, Existing tasks: $existing_count, New tasks created: $new_task_count"
+    incomplete_reviews=$(grep -c "^- \[ \] #task #code-review" "$CODE_REVIEWS_FILE" 2>/dev/null || echo "0")
+
+    log "INFO" "Processing summary: Integration PRs: $integration_count, General PRs: $general_count, Total incomplete code reviews: $incomplete_reviews, New code review tasks created: $new_task_count"
     
     log "INFO" "GitHub review processing completed"
 }
