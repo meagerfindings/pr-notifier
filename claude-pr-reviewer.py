@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Configuration
 REPO = "CompanyCam/Company-Cam-API"
-OBSIDIAN_VAULT = "/Users/mat/Documents/Obsidian/CompanyCam Vault"
+OBSIDIAN_VAULT = "/Users/mat/git/Obsidian/CompanyCam Vault"
 REVIEW_DIR = f"{OBSIDIAN_VAULT}/Code Reviews/automated-reviews"
 INTEGRATION_TEAM_MEMBERS = ["groovestation31785", "xrgloria", "rotondozer", "jarhartman", "gregmalcolm"]
 
