@@ -16,7 +16,7 @@ readonly OBSIDIAN_VAULT="/Users/mat/git/Obsidian/CompanyCam Vault"
 readonly CODE_REVIEWS_FILE="$OBSIDIAN_VAULT/Code Reviews.md"
 readonly LOG_FILE="/tmp/github-review-monitor.log"
 readonly GITHUB_USER="meagerfindings"
-readonly INTEGRATION_TEAM_MEMBERS=("groovestation31785" "xrgloria" "rotondozer" "jarhartman")
+readonly INTEGRATION_TEAM_MEMBERS=("groovestation31785" "xrgloria" "rotondozer" "jarhartman" "gregmalcolm" "hcru20")
 readonly NTFY_SERVER="ntfy.tail001dd.ts.net"
 readonly NTFY_TOPIC="code-reviews"
 
@@ -129,27 +129,37 @@ pr_meets_size_threshold() {
 # Check if PR needs review (not already reviewed by user)
 pr_needs_review() {
     local pr_number="$1"
-    
+
+    # Check if user is explicitly requested as a reviewer (by name, not just team)
+    local user_requested
+    user_requested=$(gh pr view "$pr_number" --repo "$REPO" --json reviewRequests 2>/dev/null | \
+        jq --arg user "$GITHUB_USER" '[.reviewRequests[] | select(.__typename == "User" and .login == $user)] | length' 2>/dev/null || echo "0")
+
+    if [[ "$user_requested" -gt 0 ]]; then
+        log "DEBUG" "User explicitly requested as reviewer for PR #$pr_number - needs review"
+        return 0  # Needs review - explicit request overrides everything
+    fi
+
     # Check if user has already submitted a review for this PR
     local user_reviews
     user_reviews=$(gh pr view "$pr_number" --repo "$REPO" --json reviews 2>/dev/null | \
         jq --arg user "$GITHUB_USER" '[.reviews[] | select(.author.login == $user)] | length' 2>/dev/null || echo "0")
-    
+
     # If user has already reviewed, check if there are new commits since last review
     if [[ "$user_reviews" -gt 0 ]]; then
         log "DEBUG" "User has already reviewed PR #$pr_number ($user_reviews reviews)"
-        
+
         # Get timestamp of user's last review
         local last_review_date
         last_review_date=$(gh pr view "$pr_number" --repo "$REPO" --json reviews 2>/dev/null | \
             jq -r --arg user "$GITHUB_USER" '[.reviews[] | select(.author.login == $user) | .submittedAt] | sort | last' 2>/dev/null || echo "")
-        
+
         if [[ -n "$last_review_date" ]]; then
             # Check if PR was updated after last review
             local pr_updated
             pr_updated=$(gh pr view "$pr_number" --repo "$REPO" --json updatedAt 2>/dev/null | \
                 jq -r '.updatedAt' 2>/dev/null || echo "")
-            
+
             if [[ -n "$pr_updated" && "$pr_updated" > "$last_review_date" ]]; then
                 log "DEBUG" "PR #$pr_number updated after last review - needs re-review"
                 return 0  # Needs review
@@ -159,23 +169,23 @@ pr_needs_review() {
             fi
         fi
     fi
-    
+
     # Check if there are unresolved review comments addressing the user
     local addressing_comments
     addressing_comments=$(gh pr view "$pr_number" --repo "$REPO" --json comments 2>/dev/null | \
         jq --arg user "@$GITHUB_USER" '[.comments[] | select(.body | contains($user))] | length' 2>/dev/null || echo "0")
-    
+
     if [[ "$addressing_comments" -gt 0 ]]; then
         log "DEBUG" "PR #$pr_number has comments addressing user - needs review"
         return 0  # Needs review
     fi
-    
+
     # If no previous review, definitely needs review
     if [[ "$user_reviews" -eq 0 ]]; then
         log "DEBUG" "PR #$pr_number not yet reviewed by user - needs review"
         return 0  # Needs review
     fi
-    
+
     return 1  # Doesn't need review
 }
 
@@ -293,6 +303,7 @@ get_integration_reviews() {
     all_prs=$(gh pr list \
         --repo "$REPO" \
         --state open \
+        --limit 1000 \
         --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null)
     
     if [[ -n "$all_prs" ]]; then
