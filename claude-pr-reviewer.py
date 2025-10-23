@@ -18,7 +18,7 @@ from datetime import datetime
 REPO = "CompanyCam/Company-Cam-API"
 OBSIDIAN_VAULT = "/Users/mat/git/Obsidian/CompanyCam Vault"
 REVIEW_DIR = f"{OBSIDIAN_VAULT}/Code Reviews/automated-reviews"
-INTEGRATION_TEAM_MEMBERS = ["groovestation31785", "xrgloria", "rotondozer", "jarhartman", "gregmalcolm"]
+INTEGRATION_TEAM_MEMBERS = ["groovestation31785", "xrgloria", "rotondozer", "jarhartman", "gregmalcolm", "hcru20"]
 
 # Exit codes
 EXIT_SUCCESS = 0  # At least one review generated and saved
