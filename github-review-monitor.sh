@@ -102,6 +102,21 @@ send_ntfy_notification() {
     fi
 }
 
+# Get PR line counts in formatted string
+get_pr_line_counts() {
+    local pr_number="$1"
+
+    # Get PR diff statistics
+    local pr_stats
+    pr_stats=$(gh pr view "$pr_number" --repo "$REPO" --json additions,deletions 2>/dev/null || echo '{"additions":0,"deletions":0}')
+
+    local additions deletions
+    additions=$(echo "$pr_stats" | jq -r '.additions // 0' 2>/dev/null || echo "0")
+    deletions=$(echo "$pr_stats" | jq -r '.deletions // 0' 2>/dev/null || echo "0")
+
+    echo "(+$additions |-$deletions)"
+}
+
 # Check if PR has enough lines to warrant automated review
 pr_meets_size_threshold() {
     local pr_number="$1"
@@ -444,19 +459,23 @@ create_task_line_with_review() {
     local pr_data="$1"
     local category="$2"
     local priority="$3"
-    
+
     local number title author url
     number=$(echo "$pr_data" | jq -r '.number')
     title=$(echo "$pr_data" | jq -r '.title')
     author=$(echo "$pr_data" | jq -r '.author')
     url=$(echo "$pr_data" | jq -r '.url')
-    
+
     local formatted_title
     formatted_title=$(format_pr_title "$title")
-    
+
+    # Get line counts
+    local line_counts
+    line_counts=$(get_pr_line_counts "$number")
+
     # Link to automated review using Obsidian wiki link format
     local review_link="[[PR-${number}-review|🤖 Automated Review]]"
-    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $review_link 📅 $TODAY"
+    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $line_counts $review_link 📅 $TODAY"
 }
 
 # Create a regular task line for a PR without automated review link
@@ -464,17 +483,21 @@ create_task_line_without_review() {
     local pr_data="$1"
     local category="$2"
     local priority="$3"
-    
+
     local number title author url
     number=$(echo "$pr_data" | jq -r '.number')
     title=$(echo "$pr_data" | jq -r '.title')
     author=$(echo "$pr_data" | jq -r '.author')
     url=$(echo "$pr_data" | jq -r '.url')
-    
+
     local formatted_title
     formatted_title=$(format_pr_title "$title")
-    
-    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
+
+    # Get line counts
+    local line_counts
+    line_counts=$(get_pr_line_counts "$number")
+
+    echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $line_counts 📅 $TODAY"
 }
 
 # Legacy function - maintained for backward compatibility
@@ -483,24 +506,28 @@ create_task_line() {
     local pr_data="$1"
     local category="$2"
     local priority="$3"
-    
+
     local number title author url
     number=$(echo "$pr_data" | jq -r '.number')
     title=$(echo "$pr_data" | jq -r '.title')
     author=$(echo "$pr_data" | jq -r '.author')
     url=$(echo "$pr_data" | jq -r '.url')
-    
+
     local formatted_title
     formatted_title=$(format_pr_title "$title")
-    
+
+    # Get line counts
+    local line_counts
+    line_counts=$(get_pr_line_counts "$number")
+
     # Check if automated review exists
     local review_file="/Users/mat/git/Obsidian/CompanyCam Vault/Code Reviews/automated-reviews/PR-${number}-review.md"
     if [[ -f "$review_file" ]]; then
         # Link to automated review using Obsidian wiki link format
         local review_link="[[PR-${number}-review|🤖 Automated Review]]"
-        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $review_link 📅 $TODAY"
+        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $line_counts $review_link 📅 $TODAY"
     else
-        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) 📅 $TODAY"
+        echo "- [ ] #task #code-review #$category #$priority [$author's $formatted_title]($url) $line_counts 📅 $TODAY"
     fi
 }
 
@@ -873,8 +900,12 @@ process_reviews() {
                 title=$(echo "$pr" | jq -r '.title')
                 number=$(echo "$pr" | jq -r '.number')
                 formatted_title=$(format_pr_title "$title")
-                
-                local task_line="- [ ] #task #code-review #my-pr #urgent-important [$formatted_title]($url) 📅 $TODAY"
+
+                # Get line counts
+                local line_counts
+                line_counts=$(get_pr_line_counts "$number")
+
+                local task_line="- [ ] #task #code-review #my-pr #urgent-important [$formatted_title]($url) $line_counts 📅 $TODAY"
                 new_tasks+="$task_line"$'\n'
                 log "DEBUG" "Added my PR: $title"
             fi
