@@ -18,7 +18,6 @@ from datetime import datetime
 REPO = "CompanyCam/Company-Cam-API"
 OBSIDIAN_VAULT = "/Users/mat/git/Obsidian/CompanyCam Vault"
 REVIEW_DIR = f"{OBSIDIAN_VAULT}/Code Reviews/automated-reviews"
-INTEGRATION_TEAM_MEMBERS = ["groovestation31785", "xrgloria", "rotondozer", "jarhartman", "gregmalcolm", "hcru20"]
 
 # Exit codes
 EXIT_SUCCESS = 0  # At least one review generated and saved
@@ -78,27 +77,6 @@ def get_pr_files(pr_number):
         log("ERROR", f"Failed to get PR diff: {e}")
         return None
 
-def is_integration_pr(pr_details):
-    """Determine if PR is an integration PR based on existing logic"""
-    title = pr_details.get("title", "")
-    author = pr_details.get("author", {}).get("login", "")
-    
-    # Check integration criteria
-    if "INT-" in title:
-        return True
-    if "integration" in title.lower():
-        return True
-    if author in INTEGRATION_TEAM_MEMBERS:
-        return True
-    
-    # Check for integration team review request
-    review_requests = pr_details.get("reviewRequests", [])
-    for request in review_requests:
-        if (request.get("__typename") == "Team" and 
-            request.get("slug") == "CompanyCam/integrations-engineers"):
-            return True
-    
-    return False
 
 def call_claude_code_cli(prompt, additional_context=""):
     """Call Claude Code CLI for code review with exponential backoff retry"""
@@ -164,24 +142,22 @@ def call_claude_code_cli(prompt, additional_context=""):
     # This shouldn't be reached, but just in case
     return None
 
-def generate_review_content(pr_details, diff_content, is_integration):
+def generate_review_content(pr_details, diff_content):
     """Generate the review content using Claude
-    
+
     Returns:
         tuple: (review_content, has_successful_reviews)
-        - review_content: Complete markdown content if any reviews succeeded, None otherwise
-        - has_successful_reviews: True if at least one review was generated successfully
+        - review_content: Complete markdown content if review succeeded, None otherwise
+        - has_successful_reviews: True if review was generated successfully
     """
     pr_number = pr_details.get("number")
     title = pr_details.get("title", "")
     author = pr_details.get("author", {}).get("login", "")
     url = pr_details.get("url", "")
     body = pr_details.get("body", "")
-    
-    successful_reviews = 0
-    
-    # Create the general review prompt
-    general_prompt = f"""Please review this Pull Request:
+
+    # Create the review prompt
+    review_prompt = f"""Please review this Pull Request:
 
 Title: {title}
 Author: {author}
@@ -193,95 +169,34 @@ Code changes:
 Please provide a thorough code review covering:
 - Code quality and best practices
 - Potential bugs or issues
-- Security considerations  
+- Security considerations
 - Performance implications
 - Suggestions for improvement
 
 Format your response as a detailed markdown code review."""
 
-    # Get general review from Claude Code CLI
-    log("INFO", f"Generating general review for PR #{pr_number}")
-    general_review = call_claude_code_cli(general_prompt, "")
-    if general_review:
-        successful_reviews += 1
-        log("DEBUG", "General review generated successfully")
-    else:
-        log("WARN", "General review generation failed")
-    
-    # If integration PR, get specialized review
-    integration_review = None
-    if is_integration:
-        integration_prompt = f"""Please review this Pull Request with a focus on integration expertise:
+    # Get review from Claude Code CLI
+    log("INFO", f"Generating code review for PR #{pr_number}")
+    review = call_claude_code_cli(review_prompt, "")
 
-Title: {title}
-Author: {author}
-Description: {body}
-
-Code changes:
-{diff_content}
-
-Please provide an integration-specific analysis covering:
-- Integration patterns and practices
-- API design considerations
-- Data flow and transformation logic
-- Third-party service interactions
-- Error handling for external dependencies
-- Monitoring and observability considerations
-- Compatibility with existing integrations
-
-Format your response as a detailed markdown integration analysis."""
-
-        log("INFO", f"Generating integration review for PR #{pr_number}")
-        integration_review = call_claude_code_cli(integration_prompt, "")
-        if integration_review:
-            successful_reviews += 1
-            log("DEBUG", "Integration review generated successfully")
-        else:
-            log("WARN", "Integration review generation failed")
-    
-    # Log summary of review generation
-    log("INFO", f"Review generation summary: {successful_reviews} successful review(s) generated")
-    
-    # Only generate content if we have at least one successful review
-    if successful_reviews == 0:
-        log("ERROR", "No reviews could be generated - Claude CLI completely unavailable")
+    if not review:
+        log("ERROR", "Review could not be generated - Claude CLI unavailable")
         return None, False
-    
-    # Generate markdown content only for successful reviews
+
+    log("DEBUG", "Code review generated successfully")
+
+    # Generate markdown content
     content = f"""# PR #{pr_number}: {title}
 
 ## GitHub Links
 - [View PR]({url})
 - [View Files]({url}/files)
 
-"""
-    
-    # Add general review section only if it succeeded
-    if general_review:
-        content += f"""## General Code Review (Claude Sonnet)
+## Code Review (Claude Sonnet)
 
-{general_review}
+{review}
 
-"""
-    
-    # Add integration review section only if it succeeded  
-    if integration_review:
-        content += f"""## Integration Expert Analysis
-
-{integration_review}
-
-"""
-        
-        # If we have both reviews, add combined assessment section
-        if general_review:
-            content += f"""## Combined Assessment
-
-This PR requires both general code review and integration expertise. Please review both analyses above when making your decision.
-
-"""
-    
-    # Add conversational context section
-    content += f"""## Conversational Context for Claude
+## Conversational Context for Claude
 
 <details>
 <summary>💬 Copy this code block to continue the review in a new Claude session</summary>
@@ -306,7 +221,7 @@ Then continue with the code review discussion.
 *Automated review generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
 *Author: {author}*
 """
-    
+
     return content, True
 
 def save_review_to_obsidian(pr_number, content):
@@ -350,25 +265,21 @@ def main():
     if line_count < 10:
         log("INFO", f"Skipping review for PR #{args.pr_number} ({line_count} lines - below threshold)")
         return EXIT_SKIPPED_SIZE
-    
-    # Check if integration PR
-    is_integration = is_integration_pr(pr_details)
-    log("INFO", f"PR #{args.pr_number} - Integration PR: {is_integration}")
-    
+
     # Get PR diff
     diff_content = get_pr_files(args.pr_number)
     if not diff_content:
         log("ERROR", f"Could not retrieve diff for PR #{args.pr_number}")
         return 1
-    
+
     if args.dry_run:
-        log("INFO", f"DRY RUN: Would generate {'dual' if is_integration else 'single'} review for PR #{args.pr_number}")
+        log("INFO", f"DRY RUN: Would generate review for PR #{args.pr_number}")
         log("INFO", f"DRY RUN: PR has {line_count} lines of changes")
         return 0
-    
+
     # Generate review content
-    log("INFO", f"Generating {'dual' if is_integration else 'single'} review for PR #{args.pr_number}")
-    review_content, has_successful_reviews = generate_review_content(pr_details, diff_content, is_integration)
+    log("INFO", f"Generating code review for PR #{args.pr_number}")
+    review_content, has_successful_reviews = generate_review_content(pr_details, diff_content)
     
     # If no successful reviews were generated, exit with tool unavailable code
     if not has_successful_reviews:

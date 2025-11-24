@@ -437,21 +437,80 @@ get_general_reviews() {
         ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
 }
 
-# Get your PRs that need attention
-get_my_prs() {
-    log "DEBUG" "Fetching my PRs needing attention..." >&2
-    
-    # Get your open PRs
+# Get your PRs that have new activity (comments, reviews, etc)
+get_my_prs_with_new_activity() {
+    log "DEBUG" "Fetching my PRs with new activity..." >&2
+
+    # Get your open PRs with detailed activity info
     local my_prs
     my_prs=$(gh pr list \
         --repo "$REPO" \
         --state open \
         --author "$GITHUB_USER" \
-        --json number,title,url,updatedAt,comments,reviews,isDraft 2>/dev/null | \
-        jq 'map(select(.isDraft == false) | {number, title, url, updated: .updatedAt, comment_count: (.comments | length), review_count: (.reviews | length)})' 2>/dev/null || echo "[]")
-    
-    # For now, return all your open PRs - we'll enhance this later to detect new activity
-    echo "$my_prs"
+        --json number,title,url,updatedAt,comments,reviews,isDraft 2>/dev/null)
+
+    if [[ -z "$my_prs" || "$my_prs" == "[]" ]]; then
+        echo "[]"
+        return
+    fi
+
+    # Filter for PRs with activity (comments or reviews)
+    local prs_with_activity="[]"
+
+    while IFS= read -r pr; do
+        local number title url updated comment_count review_count
+        number=$(echo "$pr" | jq -r '.number' 2>/dev/null || continue)
+        title=$(echo "$pr" | jq -r '.title' 2>/dev/null || continue)
+        url=$(echo "$pr" | jq -r '.url' 2>/dev/null || continue)
+        updated=$(echo "$pr" | jq -r '.updatedAt' 2>/dev/null || continue)
+        comment_count=$(echo "$pr" | jq -r '.comments | length' 2>/dev/null || echo "0")
+        review_count=$(echo "$pr" | jq -r '.reviews | length' 2>/dev/null || echo "0")
+
+        # Skip draft PRs
+        local is_draft
+        is_draft=$(echo "$pr" | jq -r '.isDraft' 2>/dev/null || echo "false")
+        if [[ "$is_draft" == "true" ]]; then
+            continue
+        fi
+
+        # Check if there's any activity (comments or reviews)
+        if [[ "$comment_count" -gt 0 || "$review_count" -gt 0 ]]; then
+            # Get the latest activity timestamp
+            local latest_comment_time latest_review_time latest_activity_time
+            latest_comment_time=$(echo "$pr" | jq -r '[.comments[].createdAt] | sort | last // empty' 2>/dev/null || echo "")
+            latest_review_time=$(echo "$pr" | jq -r '[.reviews[].submittedAt] | sort | last // empty' 2>/dev/null || echo "")
+
+            # Determine the most recent activity
+            if [[ -n "$latest_comment_time" && -n "$latest_review_time" ]]; then
+                if [[ "$latest_comment_time" > "$latest_review_time" ]]; then
+                    latest_activity_time="$latest_comment_time"
+                else
+                    latest_activity_time="$latest_review_time"
+                fi
+            elif [[ -n "$latest_comment_time" ]]; then
+                latest_activity_time="$latest_comment_time"
+            else
+                latest_activity_time="$latest_review_time"
+            fi
+
+            local pr_object
+            pr_object=$(jq -n \
+                --arg number "$number" \
+                --arg title "$title" \
+                --arg url "$url" \
+                --arg updated "$updated" \
+                --arg latest_activity "$latest_activity_time" \
+                --argjson comment_count "$comment_count" \
+                --argjson review_count "$review_count" \
+                '{number: ($number | tonumber), title: $title, url: $url, updated: $updated, latest_activity: $latest_activity, comment_count: $comment_count, review_count: $review_count}')
+
+            prs_with_activity=$(echo "$prs_with_activity" | jq --argjson new_pr "$pr_object" '. + [$new_pr]')
+
+            log "DEBUG" "Found activity on my PR #$number: $comment_count comments, $review_count reviews" >&2
+        fi
+    done <<< "$(echo "$my_prs" | jq -c '.[]' 2>/dev/null)"
+
+    echo "$prs_with_activity"
 }
 
 # Create a task line for a PR with automated review link
@@ -884,33 +943,9 @@ process_reviews() {
         done <<< "$(echo "$general_prs" | jq -c '.[]' 2>/dev/null || true)"
     fi
     
-    # Process my PRs
-    log "DEBUG" "Processing my PRs..."
-    local my_prs
-    my_prs=$(get_my_prs)
-    
-    if [[ "$my_prs" != "[]" && -n "$my_prs" ]]; then
-        while IFS= read -r pr; do
-            local url
-            url=$(echo "$pr" | jq -r '.url')
-            
-            if ! echo "$existing_urls" | grep -q "$url"; then
-                # For my PRs, don't include the author name since it's obvious it's mine
-                local title number
-                title=$(echo "$pr" | jq -r '.title')
-                number=$(echo "$pr" | jq -r '.number')
-                formatted_title=$(format_pr_title "$title")
-
-                # Get line counts
-                local line_counts
-                line_counts=$(get_pr_line_counts "$number")
-
-                local task_line="- [ ] #task #code-review #my-pr #urgent-important [$formatted_title]($url) $line_counts 📅 $TODAY"
-                new_tasks+="$task_line"$'\n'
-                log "DEBUG" "Added my PR: $title"
-            fi
-        done <<< "$(echo "$my_prs" | jq -c '.[]' 2>/dev/null || true)"
-    fi
+    # NOTE: "My PRs" section removed per user request (2025-11-17)
+    # We no longer automatically add your PRs to Code Reviews.md
+    # However, NTFY notifications are still sent for PR updates (comments, reviews, feedback)
     
     # Add new tasks and update existing ones
     add_tasks_to_file "$new_tasks"
@@ -960,19 +995,96 @@ record_notification_sent() {
     fi
 }
 
+# Check for new activity on your own PRs and send notifications
+check_my_prs_for_activity() {
+    log "INFO" "Checking my PRs for new activity on $TODAY..."
+
+    local my_prs_with_activity
+    my_prs_with_activity=$(get_my_prs_with_new_activity)
+
+    if [[ "$my_prs_with_activity" == "[]" || -z "$my_prs_with_activity" ]]; then
+        log "INFO" "No activity found on my PRs"
+        return 0
+    fi
+
+    local pr_count
+    pr_count=$(echo "$my_prs_with_activity" | jq 'length' 2>&1)
+    if [[ $? -ne 0 ]]; then
+        log "WARN" "Failed to get PR count: $pr_count" >&2
+        return 1
+    fi
+    log "INFO" "Found $pr_count of my PR(s) with activity"
+
+    local notifications_sent=0
+
+    # Check each PR for new activity since last notification
+    while IFS= read -r pr; do
+        local number title url latest_activity comment_count review_count
+        number=$(echo "$pr" | jq -r '.number')
+        title=$(echo "$pr" | jq -r '.title')
+        url=$(echo "$pr" | jq -r '.url')
+        latest_activity=$(echo "$pr" | jq -r '.latest_activity')
+        comment_count=$(echo "$pr" | jq -r '.comment_count')
+        review_count=$(echo "$pr" | jq -r '.review_count')
+
+        # Check if we already sent a notification for this PR's latest activity
+        # We use the latest_activity timestamp as a key
+        local notification_key="$TODAY:mypr:$number:$latest_activity"
+        if grep -q "^$notification_key$" "$NOTIFICATIONS_FILE" 2>/dev/null; then
+            log "DEBUG" "Notification already sent for PR #$number's latest activity - skipping"
+            continue
+        fi
+
+        # Build notification message with activity details
+        local activity_summary=""
+        if [[ "$comment_count" -gt 0 && "$review_count" -gt 0 ]]; then
+            activity_summary="$review_count review(s) and $comment_count comment(s)"
+        elif [[ "$review_count" -gt 0 ]]; then
+            activity_summary="$review_count review(s)"
+        else
+            activity_summary="$comment_count comment(s)"
+        fi
+
+        local notification_title="💬 Activity on Your PR #$number"
+        local notification_message="$title
+
+New activity: $activity_summary
+
+View: $url"
+
+        if [[ "$SEND_NOTIFICATIONS" == "true" ]]; then
+            send_ntfy_notification "$notification_title" "$notification_message" "default" "pr,activity"
+            echo "$notification_key" >> "$NOTIFICATIONS_FILE"
+            ((notifications_sent++))
+        else
+            log "INFO" "Would notify: $notification_title - $notification_message"
+        fi
+
+        log "INFO" "Activity detected on my PR #$number: $activity_summary"
+    done <<< "$(echo "$my_prs_with_activity" | jq -c '.[]' 2>/dev/null || true)"
+
+    if [[ $notifications_sent -gt 0 ]]; then
+        log "INFO" "Sent $notifications_sent notification(s) for my PRs"
+    else
+        log "INFO" "No new notifications sent (all activity already notified)"
+    fi
+
+    log "INFO" "My PRs activity check completed"
+}
+
 # Process integration reviews only (for frequent checks)
 process_integration_reviews_only() {
     log "INFO" "Starting integration review check for $TODAY..."
-    
+
     local notification_prs
     notification_prs=$(get_integration_reviews_for_notification)
     log "DEBUG" "Notification PRs result (first 100 chars): $(echo "$notification_prs" | head -c 100)" >&2
-    
+
     if [[ "$notification_prs" == "[]" || -z "$notification_prs" ]]; then
         log "INFO" "No new integration reviews requiring notification"
         return 0
     fi
-    
+
     local pr_count
     pr_count=$(echo "$notification_prs" | jq 'length' 2>&1)
     if [[ $? -ne 0 ]]; then
@@ -980,37 +1092,48 @@ process_integration_reviews_only() {
         return 1
     fi
     log "INFO" "Found $pr_count integration PR(s) requiring notification"
-    
+
     # Add new integration PRs to Code Reviews.md (with deduplication)
     log "DEBUG" "Adding new integration PRs to Code Reviews.md..." >&2
     local existing_urls new_tasks=""
     existing_urls=$(get_existing_pr_urls)
-    
+
     while IFS= read -r pr; do
         local url number title
         url=$(echo "$pr" | jq -r '.url')
         number=$(echo "$pr" | jq -r '.number')
         title=$(echo "$pr" | jq -r '.title')
-        
+
         # Check if this PR is already tracked in Code Reviews.md
         if ! echo "$existing_urls" | grep -q "$url"; then
-            # STEP 1: Always create the task first (reliability)
+            # STEP 1: Try automated review first (only if meets size threshold)
             local task_line
-            task_line=$(create_task_line "$pr" "integrations-review" "urgent-important")
-            new_tasks+="$task_line"$'\n'
-            log "DEBUG" "Added new integration task: $title" >&2
-
-            # STEP 2: Trigger automated review (best effort, only if meets size threshold)
-            if pr_meets_size_threshold "$number"; then
-                trigger_automated_review "$number" "$title"
+            if pr_meets_size_threshold "$number" && trigger_automated_review "$number" "$title"; then
+                # Automated review succeeded - create task with review link
+                task_line=$(create_task_line_with_review "$pr" "integrations-review" "urgent-important")
+                log "DEBUG" "Added integration review with automated review: $title"
             else
-                log "DEBUG" "Skipping automated review for PR #$number: below size threshold" >&2
+                local review_exit_code=$?
+                if [[ $review_exit_code -eq 2 ]]; then
+                    # Tool unavailable - create regular task without link
+                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                    log "DEBUG" "Added integration review (no automated review): $title"
+                elif [[ $review_exit_code -eq 3 ]] || ! pr_meets_size_threshold "$number"; then
+                    # Skipped due to size or below threshold - create task without automated review
+                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                    log "DEBUG" "Added integration review (below size threshold, no automated review): $title"
+                else
+                    # Other error - create regular task without link
+                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                    log "DEBUG" "Added integration review (review failed): $title"
+                fi
             fi
+            new_tasks+="$task_line"$'\n'
         else
             log "DEBUG" "Integration PR already tracked: $title" >&2
         fi
     done <<< "$(echo "$notification_prs" | jq -c '.[]' 2>/dev/null || true)"
-    
+
     # Add new tasks to file if any were found
     if [[ -n "$new_tasks" ]]; then
         add_tasks_to_file "$new_tasks"
@@ -1111,6 +1234,11 @@ main() {
     if [[ "$INTEGRATION_ONLY" == "true" ]]; then
         log "DEBUG" "Running integration-only mode" >&2
         process_integration_reviews_only
+
+        # Also check for activity on my PRs
+        log "DEBUG" "Checking for activity on my PRs..." >&2
+        check_my_prs_for_activity
+
         log "DEBUG" "Integration-only processing completed" >&2
         return 0
     else
