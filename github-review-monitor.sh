@@ -9,16 +9,62 @@
 
 set -euo pipefail
 
-# Configuration
-readonly REPO="CompanyCam/Company-Cam-API"
+# Script directory (determined before loading config)
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly OBSIDIAN_VAULT="/Users/mat/git/Obsidian/CompanyCam Vault"
+
+# Load configuration from .env file
+load_config() {
+    local env_file="$SCRIPT_DIR/.env"
+
+    if [[ ! -f "$env_file" ]]; then
+        echo "ERROR: Configuration file not found: $env_file" >&2
+        echo "Please copy .env.example to .env and configure it." >&2
+        exit 1
+    fi
+
+    # Source the .env file
+    # shellcheck disable=SC1090
+    source "$env_file"
+
+    # Validate required configuration
+    if [[ -z "${GITHUB_REPO:-}" ]]; then
+        echo "ERROR: GITHUB_REPO is not set in .env" >&2
+        exit 1
+    fi
+    if [[ -z "${GITHUB_USER:-}" ]]; then
+        echo "ERROR: GITHUB_USER is not set in .env" >&2
+        exit 1
+    fi
+    if [[ -z "${OBSIDIAN_VAULT:-}" ]]; then
+        echo "ERROR: OBSIDIAN_VAULT is not set in .env" >&2
+        exit 1
+    fi
+}
+
+# Load config before setting readonly variables
+load_config
+
+# Configuration from .env
+readonly REPO="${GITHUB_REPO}"
+readonly OBSIDIAN_VAULT="${OBSIDIAN_VAULT}"
 readonly CODE_REVIEWS_FILE="$OBSIDIAN_VAULT/Code Reviews.md"
 readonly LOG_FILE="/tmp/github-review-monitor.log"
-readonly GITHUB_USER="meagerfindings"
-readonly INTEGRATION_TEAM_MEMBERS=("groovestation31785" "xrgloria" "rotondozer" "jarhartman" "gregmalcolm" "hcru20")
-readonly NTFY_SERVER="ntfy.tail001dd.ts.net"
-readonly NTFY_TOPIC="code-reviews"
+readonly GITHUB_USER="${GITHUB_USER}"
+readonly NTFY_SERVER="${NTFY_SERVER:-}"
+readonly NTFY_TOPIC="${NTFY_TOPIC:-code-reviews}"
+
+# Parse team members from comma-separated string
+IFS=',' read -ra INTEGRATION_TEAM_MEMBERS <<< "${TEAM_MEMBERS:-}"
+
+# Team slugs for review detection
+readonly INTEGRATION_TEAM_SLUG="${INTEGRATION_TEAM_SLUG:-}"
+readonly BACKEND_TEAM_SLUG="${BACKEND_TEAM_SLUG:-}"
+
+# Advanced settings with defaults
+readonly PR_SIZE_THRESHOLD="${PR_SIZE_THRESHOLD:-10}"
+readonly MAX_GENERAL_REVIEWS="${MAX_GENERAL_REVIEWS:-10}"
+readonly BUSINESS_HOURS_START="${BUSINESS_HOURS_START:-8}"
+readonly BUSINESS_HOURS_END="${BUSINESS_HOURS_END:-16}"
 
 # Options
 DRY_RUN=false
@@ -80,21 +126,27 @@ send_ntfy_notification() {
     local message="$2"
     local priority="${3:-default}"
     local tags="${4:-review,github}"
-    
+
+    # Skip if NTFY is not configured
+    if [[ -z "$NTFY_SERVER" ]]; then
+        log "DEBUG" "NTFY not configured, skipping notification: $title"
+        return 0
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
         log "INFO" "DRY RUN: Would send notification: $title - $message"
         return 0
     fi
-    
+
     log "DEBUG" "Sending NTFY notification: $title"
-    
+
     curl -s \
         -H "Title: $title" \
         -H "Priority: $priority" \
         -H "Tags: $tags" \
         -d "$message" \
         "https://$NTFY_SERVER/$NTFY_TOPIC" >/dev/null 2>&1
-    
+
     if [[ $? -eq 0 ]]; then
         log "INFO" "NTFY notification sent: $title"
     else
@@ -133,10 +185,10 @@ pr_meets_size_threshold() {
     log "DEBUG" "PR #$pr_number: $additions additions, $deletions deletions, $total_lines total lines"
 
     # Return 0 (true) if PR meets threshold, 1 (false) if it doesn't
-    if [[ $total_lines -ge 10 ]]; then
+    if [[ $total_lines -ge $PR_SIZE_THRESHOLD ]]; then
         return 0
     else
-        log "DEBUG" "PR #$pr_number below size threshold ($total_lines lines < 10)"
+        log "DEBUG" "PR #$pr_number below size threshold ($total_lines lines < $PR_SIZE_THRESHOLD)"
         return 1
     fi
 }
@@ -362,9 +414,11 @@ get_integration_reviews() {
         # Check integration criteria
         local is_integration=false
         
-        # Check for team review request
-        if echo "$pr" | jq -e '.reviewRequests[]? | select(.__typename == "Team" and .slug == "CompanyCam/integrations-engineers")' >/dev/null 2>&1; then
-            is_integration=true
+        # Check for team review request (if integration team slug is configured)
+        if [[ -n "$INTEGRATION_TEAM_SLUG" ]]; then
+            if echo "$pr" | jq -e --arg slug "$INTEGRATION_TEAM_SLUG" '.reviewRequests[]? | select(.__typename == "Team" and .slug == $slug)' >/dev/null 2>&1; then
+                is_integration=true
+            fi
         fi
         
         # Check for INT- in title
@@ -430,11 +484,21 @@ get_general_reviews() {
         log "DEBUG" "Raw general reviews count: $(echo "$raw_response" | jq 'length' 2>/dev/null || echo 'parse_error')" >&2
     fi
     
-    echo "$raw_response" | \
-        jq --arg user "$GITHUB_USER" 'map(select(.isDraft == false) | select(
-            (.reviewRequests[] | select(.__typename == "Team" and .slug == "CompanyCam/backend-engineers")) or
+    # Build jq filter based on whether backend team slug is configured
+    local jq_filter
+    if [[ -n "$BACKEND_TEAM_SLUG" ]]; then
+        jq_filter='map(select(.isDraft == false) | select(
+            (.reviewRequests[] | select(.__typename == "Team" and .slug == $team)) or
             (.reviewRequests[] | select(.__typename == "User" and .login == $user))
-        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
+        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})'
+        echo "$raw_response" | jq --arg user "$GITHUB_USER" --arg team "$BACKEND_TEAM_SLUG" "$jq_filter" 2>/dev/null || echo "[]"
+    else
+        # If no backend team configured, only look for direct user review requests
+        jq_filter='map(select(.isDraft == false) | select(
+            (.reviewRequests[] | select(.__typename == "User" and .login == $user))
+        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})'
+        echo "$raw_response" | jq --arg user "$GITHUB_USER" "$jq_filter" 2>/dev/null || echo "[]"
+    fi
 }
 
 # Get your PRs that have new activity (comments, reviews, etc)
@@ -896,7 +960,7 @@ process_reviews() {
         log "DEBUG" "Found $total_general_count general PRs before filtering" >&2
         
         local count=0
-        while IFS= read -r pr && [[ $count -lt 10 ]]; do
+        while IFS= read -r pr && [[ $count -lt $MAX_GENERAL_REVIEWS ]]; do
             local url number title
             url=$(echo "$pr" | jq -r '.url')
             number=$(echo "$pr" | jq -r '.number')
@@ -1245,8 +1309,6 @@ main() {
         log "DEBUG" "Running full review processing" >&2
         process_reviews
     fi
-    
-    log "INFO" "GitHub review monitoring completed successfully"
 }
 
 # Run main function with all arguments

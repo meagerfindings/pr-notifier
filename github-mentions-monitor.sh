@@ -9,13 +9,51 @@
 
 set -euo pipefail
 
-# Configuration
-readonly REPO="CompanyCam/Company-Cam-API"
-readonly NTFY_SERVER="ntfy.tail001dd.ts.net"
-readonly NTFY_TOPIC="code-reviews"
+# Script directory (determined before loading config)
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load configuration from .env file
+load_config() {
+    local env_file="$SCRIPT_DIR/.env"
+
+    if [[ ! -f "$env_file" ]]; then
+        echo "ERROR: Configuration file not found: $env_file" >&2
+        echo "Please copy .env.example to .env and configure it." >&2
+        exit 1
+    fi
+
+    # Source the .env file
+    # shellcheck disable=SC1090
+    source "$env_file"
+
+    # Validate required configuration
+    if [[ -z "${GITHUB_REPO:-}" ]]; then
+        echo "ERROR: GITHUB_REPO is not set in .env" >&2
+        exit 1
+    fi
+    if [[ -z "${GITHUB_USER:-}" ]]; then
+        echo "ERROR: GITHUB_USER is not set in .env" >&2
+        exit 1
+    fi
+}
+
+# Load config before setting readonly variables
+load_config
+
+# Configuration from .env
+readonly REPO="${GITHUB_REPO}"
+readonly NTFY_SERVER="${NTFY_SERVER:-}"
+readonly NTFY_TOPIC="${NTFY_TOPIC:-code-reviews}"
 readonly LOG_FILE="/tmp/github-mentions-monitor.log"
-readonly GITHUB_USER="meagerfindings"
+readonly GITHUB_USER="${GITHUB_USER}"
 readonly NOTIFICATIONS_FILE="/tmp/github-mentions-notifications.log"
+
+# Advanced settings with defaults
+readonly BUSINESS_HOURS_START="${BUSINESS_HOURS_START:-8}"
+readonly BUSINESS_HOURS_END="${BUSINESS_HOURS_END:-16}"
+
+# Team slug for filtering out team mentions (optional)
+readonly BACKEND_TEAM_SLUG="${BACKEND_TEAM_SLUG:-}"
 
 # Options
 DRY_RUN=false
@@ -68,22 +106,28 @@ send_ntfy_notification() {
     local message="$2"
     local priority="${3:-high}"
     local tags="${4:-mention,urgent,github}"
-    
+
+    # Skip if NTFY is not configured
+    if [[ -z "$NTFY_SERVER" ]]; then
+        log "DEBUG" "NTFY not configured, skipping notification: $title"
+        return 0
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
         log "INFO" "DRY RUN: Would send notification: $title"
         log "DEBUG" "Message: $message"
         return 0
     fi
-    
+
     log "DEBUG" "Sending NTFY notification: $title"
-    
+
     curl -s \
         -H "Title: $title" \
         -H "Priority: $priority" \
         -H "Tags: $tags" \
         -d "$message" \
         "https://$NTFY_SERVER/$NTFY_TOPIC" >/dev/null 2>&1
-    
+
     if [[ $? -eq 0 ]]; then
         log "INFO" "NTFY notification sent: $title"
     else
@@ -194,9 +238,16 @@ get_personal_mentions() {
                         created_at=$(echo "$comment" | jq -r '.created_at // empty')
                         
                         # Check if comment contains personal mention but not team mention
-                        log "DEBUG" "Checking comment from $user_login - has @$GITHUB_USER: $([[ "$comment_body" =~ @$GITHUB_USER ]] && echo 'YES' || echo 'NO'), has @CompanyCam: $([[ "$comment_body" =~ @CompanyCam/backend-engineers ]] && echo 'YES' || echo 'NO')"
-                        if [[ "$comment_body" =~ @$GITHUB_USER ]] && ! [[ "$comment_body" =~ @CompanyCam/backend-engineers ]]; then
-                            log "INFO" "✅ Found personal mention from $user_login (not team mention)"
+                        local has_personal_mention=false
+                        local has_team_mention=false
+                        [[ "$comment_body" =~ @$GITHUB_USER ]] && has_personal_mention=true
+                        # Only check for team mention if backend team slug is configured
+                        if [[ -n "$BACKEND_TEAM_SLUG" ]] && [[ "$comment_body" =~ @$BACKEND_TEAM_SLUG ]]; then
+                            has_team_mention=true
+                        fi
+                        log "DEBUG" "Checking comment from $user_login - has @$GITHUB_USER: $([[ "$has_personal_mention" == "true" ]] && echo 'YES' || echo 'NO'), has team mention: $([[ "$has_team_mention" == "true" ]] && echo 'YES' || echo 'NO')"
+                        if [[ "$has_personal_mention" == "true" ]] && [[ "$has_team_mention" == "false" ]]; then
+                            log "INFO" "Found personal mention from $user_login (not team mention)"
                             
                             # Create mention object with comment details
                             local mention_with_comment subject_title
@@ -211,8 +262,8 @@ get_personal_mentions() {
                             
                             personal_mentions=$(echo "$personal_mentions" | jq --argjson new_mention "$mention_with_comment" '. + [$new_mention]')
                             break  # Found mention in this PR, no need to check more comments
-                        elif [[ "$comment_body" =~ @CompanyCam/backend-engineers ]]; then
-                            log "DEBUG" "⏭️  Skipping team mention from $user_login (not personal @$GITHUB_USER mention)"
+                        elif [[ "$has_team_mention" == "true" ]]; then
+                            log "DEBUG" "Skipping team mention from $user_login (not personal @$GITHUB_USER mention)"
                         fi
                     fi
                 done <<< "$all_comments"
@@ -319,9 +370,9 @@ parse_args() {
 is_business_hours() {
     local current_hour=$(date +%H)
     local current_day=$(date +%u)  # 1-7 (Monday-Sunday)
-    
-    # Only run Monday-Friday (1-5) between 8 AM and 4 PM (08-15)
-    if [[ $current_day -ge 1 && $current_day -le 5 && $((10#$current_hour)) -ge 8 && $((10#$current_hour)) -lt 16 ]]; then
+
+    # Only run Monday-Friday (1-5) between configured business hours
+    if [[ $current_day -ge 1 && $current_day -le 5 && $((10#$current_hour)) -ge $BUSINESS_HOURS_START && $((10#$current_hour)) -lt $BUSINESS_HOURS_END ]]; then
         return 0  # Business hours
     else
         return 1  # Outside business hours

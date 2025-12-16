@@ -1,0 +1,13 @@
+# Environment configuration (contains user-specific settings)
+.env
+
+# macOS
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# Log files (local only)
+*.log
