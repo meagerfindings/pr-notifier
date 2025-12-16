@@ -91,9 +91,10 @@ def call_claude_code_cli(prompt, additional_context=""):
             # Call claude directly with the prompt using -p flag
             # Limit tools to Read only for security - we just want analysis, not file changes
             result = subprocess.run([
-                "claude", 
+                "claude",
                 "-p", prompt,
-                "--allowedTools", "Read"
+                "--allowedTools", "Read",
+                "--model", "haiku"
             ], capture_output=True, text=True, check=True, timeout=120)  # 2 minute timeout
             
             if result.stdout.strip():
@@ -192,7 +193,7 @@ Format your response as a detailed markdown code review."""
 - [View PR]({url})
 - [View Files]({url}/files)
 
-## Code Review (Claude Sonnet)
+## Code Review (Claude Haiku)
 
 {review}
 
