@@ -806,6 +806,72 @@ add_tasks_to_file() {
     log "INFO" "Added $task_count new tasks to Code Reviews.md"
 }
 
+# Cancel tasks for PRs that have been merged or closed
+cancel_closed_merged_prs() {
+    log "DEBUG" "Checking for merged/closed PRs to cancel..."
+
+    if [[ ! -f "$CODE_REVIEWS_FILE" ]]; then
+        log "DEBUG" "Code Reviews file not found, skipping merged/closed check"
+        return 0
+    fi
+
+    # Read the file and find open tasks (- [ ]) with PR URLs
+    local open_tasks
+    open_tasks=$(grep -n "^- \[ \] #task #code-review" "$CODE_REVIEWS_FILE" 2>/dev/null || true)
+
+    if [[ -z "$open_tasks" ]]; then
+        log "DEBUG" "No open code review tasks found"
+        return 0
+    fi
+
+    local canceled_count=0
+    local temp_file
+    temp_file=$(mktemp)
+    cp "$CODE_REVIEWS_FILE" "$temp_file"
+
+    while IFS= read -r line; do
+        # Extract the PR URL from the task line
+        local pr_url
+        pr_url=$(echo "$line" | grep -oE 'https://github\.com/[^)]+' | head -1)
+
+        if [[ -z "$pr_url" ]]; then
+            log "DEBUG" "Could not extract PR URL from line: $line"
+            continue
+        fi
+
+        # Check the PR state using GitHub CLI
+        local pr_state
+        pr_state=$(gh pr view "$pr_url" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+
+        log "DEBUG" "PR $pr_url state: $pr_state"
+
+        if [[ "$pr_state" == "MERGED" || "$pr_state" == "CLOSED" ]]; then
+            log "INFO" "Canceling task for $pr_state PR: $pr_url"
+
+            # Replace "- [ ]" with "- [-]" for this specific line
+            # We match on the PR URL to ensure we update the correct line
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "INFO" "DRY RUN: Would cancel task for $pr_state PR: $pr_url"
+            else
+                # Use sed to replace the checkbox on lines containing this URL
+                sed -i '' "s|^\(- \)\[ \]\(.*$(echo "$pr_url" | sed 's|[&/]|\\&|g').*\)$|\1[-]\2|" "$temp_file"
+                ((canceled_count++))
+            fi
+        fi
+    done <<< "$open_tasks"
+
+    if [[ "$DRY_RUN" != "true" && $canceled_count -gt 0 ]]; then
+        cp "$temp_file" "$CODE_REVIEWS_FILE"
+        log "INFO" "Canceled $canceled_count task(s) for merged/closed PRs"
+    fi
+
+    rm -f "$temp_file"
+
+    if [[ $canceled_count -eq 0 ]]; then
+        log "DEBUG" "No tasks needed to be canceled"
+    fi
+}
+
 # Update dates on existing incomplete tasks
 update_existing_task_dates() {
     # Preflight diagnostics and DRY RUN handling
@@ -883,7 +949,10 @@ update_existing_task_dates() {
 # Main processing function
 process_reviews() {
     log "INFO" "Starting GitHub review processing for $TODAY..."
-    
+
+    # First, cancel tasks for PRs that have been merged or closed
+    cancel_closed_merged_prs
+
     local existing_urls new_tasks=""
     existing_urls=$(get_existing_pr_urls)
     
@@ -1139,6 +1208,9 @@ View: $url"
 # Process integration reviews only (for frequent checks)
 process_integration_reviews_only() {
     log "INFO" "Starting integration review check for $TODAY..."
+
+    # First, cancel tasks for PRs that have been merged or closed
+    cancel_closed_merged_prs
 
     local notification_prs
     notification_prs=$(get_integration_reviews_for_notification)
