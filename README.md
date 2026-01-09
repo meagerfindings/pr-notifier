@@ -79,8 +79,10 @@ All configuration is stored in `.env` (git-ignored). Copy `.env.example` to `.en
 |----------|-------------|---------|
 | `NTFY_SERVER` | NTFY server URL for push notifications | _(disabled)_ |
 | `NTFY_TOPIC` | NTFY topic name | `code-reviews` |
-| `TEAM_MEMBERS` | Comma-separated GitHub usernames for priority team | _(empty)_ |
+| `TEAM_MEMBERS` | Comma-separated GitHub usernames for Integrations team | _(empty)_ |
+| `RIFTWALKERS_TEAM_MEMBERS` | Comma-separated GitHub usernames for Riftwalkers team | _(empty)_ |
 | `INTEGRATION_TEAM_SLUG` | GitHub team slug for integration reviews | _(empty)_ |
+| `RIFTWALKERS_TEAM_SLUG` | GitHub team slug for Riftwalkers reviews | _(empty)_ |
 | `BACKEND_TEAM_SLUG` | GitHub team slug for backend reviews | _(empty)_ |
 | `PR_SIZE_THRESHOLD` | Min lines changed for automated review | `10` |
 | `MAX_GENERAL_REVIEWS` | Max general reviews to add per run | `10` |
@@ -112,6 +114,7 @@ BACKEND_TEAM_SLUG="acme/backend-team"
 | Category | Tag | Priority | Description |
 |----------|-----|----------|-------------|
 | Integration Reviews | `#integrations-review` | `#urgent-important` | PRs from integration team or matching criteria |
+| Riftwalkers Reviews | `#riftwalkers-review` | `#urgent-important` | PRs from Riftwalkers team members |
 | Follow-up Reviews | `#follow-up-review` | `#urgent-important` | PRs where you're mentioned |
 | General Reviews | `#general-review` | `#not-urgent-important` | Backend team PRs + direct requests |
 
@@ -123,10 +126,17 @@ PRs are flagged as "integration" reviews when they match any of:
 - PR title contains "Integration" (case insensitive)
 - PR author is in your `TEAM_MEMBERS` list
 
+### Riftwalkers Detection
+
+PRs are flagged as "riftwalkers" reviews when they match any of:
+- Review requested from your Riftwalkers team (if `RIFTWALKERS_TEAM_SLUG` is set)
+- PR author is in your `RIFTWALKERS_TEAM_MEMBERS` list
+
 ### Push Notifications (Optional)
 
 If you configure `NTFY_SERVER`, you'll receive push notifications for:
 - New integration PRs requiring review
+- New Riftwalkers PRs requiring review
 - Personal @mentions in PR comments
 - Activity on your own PRs (comments, reviews)
 
@@ -209,6 +219,16 @@ short mode
 sort by created
 ```
 
+#### Riftwalkers Team Code Reviews
+```tasks
+not done
+description includes #code-review
+description includes #riftwalkers-review
+hide tags
+short mode
+sort by created
+```
+
 #### Follow-up Reviews
 ```tasks
 not done
@@ -226,6 +246,7 @@ description includes #code-review
 description includes #not-urgent-important
 description does not include #follow-up-review
 description does not include #integrations-review
+description does not include #riftwalkers-review
 hide tags
 short mode
 sort by created
@@ -304,7 +325,7 @@ Run with `--verbose` for detailed logging:
 
 ```
 [INFO] Starting GitHub review processing for 2024-01-15...
-[INFO] Processing summary: Integration PRs: 1, General PRs: 5, Total incomplete code reviews: 4, New code review tasks created: 1
+[INFO] Processing summary: Integration PRs: 1, Riftwalkers PRs: 2, General PRs: 5, Total incomplete code reviews: 6, New code review tasks created: 3
 ```
 
 ## How It Works

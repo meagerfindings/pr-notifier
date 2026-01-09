@@ -56,8 +56,12 @@ readonly NTFY_TOPIC="${NTFY_TOPIC:-code-reviews}"
 # Parse team members from comma-separated string
 IFS=',' read -ra INTEGRATION_TEAM_MEMBERS <<< "${TEAM_MEMBERS:-}"
 
+# Parse Riftwalkers team members from comma-separated string
+IFS=',' read -ra RIFTWALKERS_TEAM_MEMBERS <<< "${RIFTWALKERS_TEAM_MEMBERS:-}"
+
 # Team slugs for review detection
 readonly INTEGRATION_TEAM_SLUG="${INTEGRATION_TEAM_SLUG:-}"
+readonly RIFTWALKERS_TEAM_SLUG="${RIFTWALKERS_TEAM_SLUG:-}"
 readonly BACKEND_TEAM_SLUG="${BACKEND_TEAM_SLUG:-}"
 
 # Advanced settings with defaults
@@ -448,8 +452,114 @@ get_integration_reviews() {
             integration_prs=$(echo "$integration_prs" | jq --argjson new_pr "$pr_object" '. + [$new_pr]')
         fi
     done <<< "$(echo "$all_prs" | jq -c '.[]' 2>/dev/null)"
-    
+
     echo "$integration_prs"
+}
+
+# Get Riftwalkers team reviews
+get_riftwalkers_reviews() {
+    log "DEBUG" "Fetching Riftwalkers team reviews..." >&2
+
+    # Skip if no Riftwalkers team members configured
+    if [[ ${#RIFTWALKERS_TEAM_MEMBERS[@]} -eq 0 ]]; then
+        log "DEBUG" "No Riftwalkers team members configured, skipping" >&2
+        echo "[]"
+        return
+    fi
+
+    # Get all open PRs that are not authored by the current user
+    local all_prs
+    all_prs=$(gh pr list \
+        --repo "$REPO" \
+        --state open \
+        --limit 1000 \
+        --json number,title,author,url,updatedAt,reviewRequests,isDraft 2>/dev/null)
+
+    if [[ -n "$all_prs" ]]; then
+        all_prs=$(echo "$all_prs" | jq --arg user "$GITHUB_USER" 'map(select(.author.login == $user | not) | select(.isDraft == false))' 2>/dev/null || echo "[]")
+    else
+        all_prs="[]"
+    fi
+
+    if [[ "$all_prs" == "[]" || -z "$all_prs" ]]; then
+        log "DEBUG" "No PRs found after filtering user's own PRs" >&2
+        echo "[]"
+        return
+    fi
+
+    log "DEBUG" "Found $(echo "$all_prs" | jq 'length' 2>/dev/null || echo "unknown") PRs for Riftwalkers filtering" >&2
+
+    # Filter PRs that match Riftwalkers criteria
+    local riftwalkers_prs="[]"
+
+    while IFS= read -r pr; do
+        local number title author url updated
+        number=$(echo "$pr" | jq -r '.number' 2>/dev/null || continue)
+        title=$(echo "$pr" | jq -r '.title' 2>/dev/null || continue)
+        author=$(echo "$pr" | jq -r '.author.name // .author.login' 2>/dev/null || continue)
+        url=$(echo "$pr" | jq -r '.url' 2>/dev/null || continue)
+        updated=$(echo "$pr" | jq -r '.updatedAt' 2>/dev/null || continue)
+
+        local is_riftwalkers=false
+
+        # Check for Riftwalkers team review request (if team slug is configured)
+        if [[ -n "$RIFTWALKERS_TEAM_SLUG" ]]; then
+            if echo "$pr" | jq -e --arg slug "$RIFTWALKERS_TEAM_SLUG" '.reviewRequests[]? | select(.__typename == "Team" and .slug == $slug)' >/dev/null 2>&1; then
+                is_riftwalkers=true
+            fi
+        fi
+
+        # Check if author is Riftwalkers team member
+        local author_login
+        author_login=$(echo "$pr" | jq -r '.author.login' 2>/dev/null || echo "")
+        for member in "${RIFTWALKERS_TEAM_MEMBERS[@]}"; do
+            if [[ "$author_login" == "$member" ]]; then
+                is_riftwalkers=true
+                break
+            fi
+        done
+
+        # Add to results if it matches Riftwalkers criteria
+        if [[ "$is_riftwalkers" == "true" ]]; then
+            local pr_object
+            pr_object=$(jq -n --arg number "$number" --arg title "$title" --arg author "$author" --arg url "$url" --arg updated "$updated" '{number: ($number | tonumber), title: $title, author: $author, url: $url, updated: $updated}')
+            riftwalkers_prs=$(echo "$riftwalkers_prs" | jq --argjson new_pr "$pr_object" '. + [$new_pr]')
+        fi
+    done <<< "$(echo "$all_prs" | jq -c '.[]' 2>/dev/null)"
+
+    echo "$riftwalkers_prs"
+}
+
+# Get Riftwalkers reviews that need notification
+get_riftwalkers_reviews_for_notification() {
+    log "DEBUG" "Fetching Riftwalkers reviews for notification..." >&2
+
+    local riftwalkers_prs
+    riftwalkers_prs=$(get_riftwalkers_reviews)
+
+    if [[ "$riftwalkers_prs" == "[]" || -z "$riftwalkers_prs" ]]; then
+        echo "[]"
+        return
+    fi
+
+    # Filter PRs that actually need review/notification
+    local notification_prs="[]"
+    while IFS= read -r pr; do
+        local number title author url
+        number=$(echo "$pr" | jq -r '.number')
+        title=$(echo "$pr" | jq -r '.title')
+        author=$(echo "$pr" | jq -r '.author')
+        url=$(echo "$pr" | jq -r '.url')
+
+        if pr_needs_review "$number"; then
+            log "DEBUG" "Riftwalkers PR #$number needs notification: $title" >&2
+            notification_prs=$(echo "$notification_prs" | jq --argjson new_pr "$pr" '. + [$new_pr]')
+        else
+            log "DEBUG" "Riftwalkers PR #$number already handled: $title" >&2
+        fi
+    done <<< "$(echo "$riftwalkers_prs" | jq -c '.[]' 2>/dev/null || true)"
+
+    echo "$notification_prs"
 }
 
 # Get follow-up reviews (PRs where you've been mentioned or someone replied to your comments)
@@ -997,19 +1107,61 @@ process_reviews() {
             fi
         done <<< "$(echo "$integration_prs" | jq -c '.[]' 2>/dev/null || true)"
     fi
-    
+
+    # Process Riftwalkers team reviews
+    log "DEBUG" "Processing Riftwalkers team reviews..."
+    local riftwalkers_prs riftwalkers_pr_urls=""
+    riftwalkers_prs=$(get_riftwalkers_reviews)
+
+    if [[ "$riftwalkers_prs" != "[]" && -n "$riftwalkers_prs" ]]; then
+        while IFS= read -r pr; do
+            local url number title
+            url=$(echo "$pr" | jq -r '.url')
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
+            riftwalkers_pr_urls+="$url"$'\n'
+
+            # Check if this PR is already tracked or is an integration PR
+            if ! echo "$existing_urls" | grep -q "$url" && ! echo "$integration_pr_urls" | grep -q "$url"; then
+                # STEP 1: Try automated review first (only if meets size threshold)
+                local task_line
+                if pr_meets_size_threshold "$number" && trigger_automated_review "$number" "$title"; then
+                    # Automated review succeeded - create task with review link
+                    task_line=$(create_task_line_with_review "$pr" "riftwalkers-review" "urgent-important")
+                    log "DEBUG" "Added Riftwalkers review with automated review: $title"
+                else
+                    local review_exit_code=$?
+                    if [[ $review_exit_code -eq 2 ]]; then
+                        # Tool unavailable - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (no automated review): $title"
+                    elif [[ $review_exit_code -eq 3 ]] || ! pr_meets_size_threshold "$number"; then
+                        # Skipped due to size or below threshold - create task without automated review
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (below size threshold, no automated review): $title"
+                    else
+                        # Other error - create regular task without link
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (review failed): $title"
+                    fi
+                fi
+                new_tasks+="$task_line"$'\n'
+            fi
+        done <<< "$(echo "$riftwalkers_prs" | jq -c '.[]' 2>/dev/null || true)"
+    fi
+
     # Process follow-up reviews
     log "DEBUG" "Processing follow-up reviews..."
     local followup_prs
     followup_prs=$(get_followup_reviews)
-    
+
     if [[ "$followup_prs" != "[]" && -n "$followup_prs" ]]; then
         while IFS= read -r pr; do
             local url
             url=$(echo "$pr" | jq -r '.url')
-            
-            # Skip if already in existing URLs or integration PRs
-            if ! echo "$existing_urls" | grep -q "$url" && ! echo "$integration_pr_urls" | grep -q "$url"; then
+
+            # Skip if already in existing URLs, integration PRs, or Riftwalkers PRs
+            if ! echo "$existing_urls" | grep -q "$url" && ! echo "$integration_pr_urls" | grep -q "$url" && ! echo "$riftwalkers_pr_urls" | grep -q "$url"; then
                 local task_line
                 task_line=$(create_task_line "$pr" "follow-up-review" "urgent-important")
                 new_tasks+="$task_line"$'\n'
@@ -1042,11 +1194,14 @@ process_reviews() {
             existing_check=$(echo "$existing_urls" | grep -q "$url" && echo "EXISTS" || echo "NEW")
             integration_check=$(echo "$integration_pr_urls" | grep -q "$url" && echo "INTEGRATION" || echo "NOT_INTEGRATION")
             new_tasks_check=$(echo "$new_tasks" | grep -q "$url" && echo "ALREADY_ADDED" || echo "NOT_ADDED")
-            log "DEBUG" "PR #$number dedup status: existing=$existing_check, integration=$integration_check, new_tasks=$new_tasks_check" >&2
-            
-            # Skip if already in existing URLs, integration PRs, or new tasks
+            local riftwalkers_check
+            riftwalkers_check=$(echo "$riftwalkers_pr_urls" | grep -q "$url" && echo "RIFTWALKERS" || echo "NOT_RIFTWALKERS")
+            log "DEBUG" "PR #$number dedup status: existing=$existing_check, integration=$integration_check, riftwalkers=$riftwalkers_check, new_tasks=$new_tasks_check" >&2
+
+            # Skip if already in existing URLs, integration PRs, Riftwalkers PRs, or new tasks
             if ! echo "$existing_urls" | grep -q "$url" && \
                ! echo "$integration_pr_urls" | grep -q "$url" && \
+               ! echo "$riftwalkers_pr_urls" | grep -q "$url" && \
                ! echo "$new_tasks" | grep -q "$url"; then
                 # STEP 1: Try automated review first (only if meets size threshold)
                 local task_line
@@ -1088,13 +1243,14 @@ process_reviews() {
     fi
     
     # Summary telemetry
-    local new_task_count integration_count general_count incomplete_reviews
+    local new_task_count integration_count riftwalkers_count general_count incomplete_reviews
     new_task_count=$(echo "$new_tasks" | grep -c "^- \[ \]" || echo "0")
     integration_count=$(echo "$integration_prs" | jq 'length' 2>/dev/null || echo "0")
+    riftwalkers_count=$(echo "$riftwalkers_prs" | jq 'length' 2>/dev/null || echo "0")
     general_count=$(echo "$general_prs" | jq 'length' 2>/dev/null || echo "0")
     incomplete_reviews=$(grep -c "^- \[ \] #task #code-review" "$CODE_REVIEWS_FILE" 2>/dev/null || echo "0")
 
-    log "INFO" "Processing summary: Integration PRs: $integration_count, General PRs: $general_count, Total incomplete code reviews: $incomplete_reviews, New code review tasks created: $new_task_count"
+    log "INFO" "Processing summary: Integration PRs: $integration_count, Riftwalkers PRs: $riftwalkers_count, General PRs: $general_count, Total incomplete code reviews: $incomplete_reviews, New code review tasks created: $new_task_count"
     
     log "INFO" "GitHub review processing completed"
 }
@@ -1205,120 +1361,185 @@ View: $url"
     log "INFO" "My PRs activity check completed"
 }
 
-# Process integration reviews only (for frequent checks)
+# Process integration and Riftwalkers reviews only (for frequent checks)
 process_integration_reviews_only() {
-    log "INFO" "Starting integration review check for $TODAY..."
+    log "INFO" "Starting priority team review check for $TODAY..."
 
     # First, cancel tasks for PRs that have been merged or closed
     cancel_closed_merged_prs
 
-    local notification_prs
-    notification_prs=$(get_integration_reviews_for_notification)
-    log "DEBUG" "Notification PRs result (first 100 chars): $(echo "$notification_prs" | head -c 100)" >&2
-
-    if [[ "$notification_prs" == "[]" || -z "$notification_prs" ]]; then
-        log "INFO" "No new integration reviews requiring notification"
-        return 0
-    fi
-
-    local pr_count
-    pr_count=$(echo "$notification_prs" | jq 'length' 2>&1)
-    if [[ $? -ne 0 ]]; then
-        log "WARN" "Failed to get PR count: $pr_count" >&2
-        return 1
-    fi
-    log "INFO" "Found $pr_count integration PR(s) requiring notification"
-
-    # Add new integration PRs to Code Reviews.md (with deduplication)
-    log "DEBUG" "Adding new integration PRs to Code Reviews.md..." >&2
     local existing_urls new_tasks=""
     existing_urls=$(get_existing_pr_urls)
-
-    while IFS= read -r pr; do
-        local url number title
-        url=$(echo "$pr" | jq -r '.url')
-        number=$(echo "$pr" | jq -r '.number')
-        title=$(echo "$pr" | jq -r '.title')
-
-        # Check if this PR is already tracked in Code Reviews.md
-        if ! echo "$existing_urls" | grep -q "$url"; then
-            # STEP 1: Try automated review first (only if meets size threshold)
-            local task_line
-            if pr_meets_size_threshold "$number" && trigger_automated_review "$number" "$title"; then
-                # Automated review succeeded - create task with review link
-                task_line=$(create_task_line_with_review "$pr" "integrations-review" "urgent-important")
-                log "DEBUG" "Added integration review with automated review: $title"
-            else
-                local review_exit_code=$?
-                if [[ $review_exit_code -eq 2 ]]; then
-                    # Tool unavailable - create regular task without link
-                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
-                    log "DEBUG" "Added integration review (no automated review): $title"
-                elif [[ $review_exit_code -eq 3 ]] || ! pr_meets_size_threshold "$number"; then
-                    # Skipped due to size or below threshold - create task without automated review
-                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
-                    log "DEBUG" "Added integration review (below size threshold, no automated review): $title"
-                else
-                    # Other error - create regular task without link
-                    task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
-                    log "DEBUG" "Added integration review (review failed): $title"
-                fi
-            fi
-            new_tasks+="$task_line"$'\n'
-        else
-            log "DEBUG" "Integration PR already tracked: $title" >&2
-        fi
-    done <<< "$(echo "$notification_prs" | jq -c '.[]' 2>/dev/null || true)"
-
-    # Add new tasks to file if any were found
-    if [[ -n "$new_tasks" ]]; then
-        add_tasks_to_file "$new_tasks"
-        log "INFO" "Added new integration PRs to Code Reviews.md"
-    else
-        log "DEBUG" "No new integration PRs to add to Code Reviews.md" >&2
-    fi
-    
     local notifications_sent=0
-    
-    # Send notifications for each PR (if not already sent today)
-    while IFS= read -r pr; do
-        local number title author url
-        number=$(echo "$pr" | jq -r '.number')
-        title=$(echo "$pr" | jq -r '.title')
-        author=$(echo "$pr" | jq -r '.author')
-        url=$(echo "$pr" | jq -r '.url')
-        
-        # Check if we already sent a notification for this PR today
-        if notification_already_sent "$number" "$TODAY"; then
-            log "DEBUG" "Notification already sent today for PR #$number - skipping"
-            continue
-        fi
-        
-        local notification_title="🔧 Integration Review Needed"
-        local notification_message="$author: $title
+
+    # ========================================
+    # Process Integration Team PRs
+    # ========================================
+    local integration_prs
+    integration_prs=$(get_integration_reviews_for_notification)
+    log "DEBUG" "Integration PRs result (first 100 chars): $(echo "$integration_prs" | head -c 100)" >&2
+
+    if [[ "$integration_prs" != "[]" && -n "$integration_prs" ]]; then
+        local integration_count
+        integration_count=$(echo "$integration_prs" | jq 'length' 2>/dev/null || echo "0")
+        log "INFO" "Found $integration_count integration PR(s) requiring notification"
+
+        # Add new integration PRs to Code Reviews.md
+        while IFS= read -r pr; do
+            local url number title
+            url=$(echo "$pr" | jq -r '.url')
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
+
+            if ! echo "$existing_urls" | grep -q "$url"; then
+                local task_line
+                if pr_meets_size_threshold "$number" && trigger_automated_review "$number" "$title"; then
+                    task_line=$(create_task_line_with_review "$pr" "integrations-review" "urgent-important")
+                    log "DEBUG" "Added integration review with automated review: $title"
+                else
+                    local review_exit_code=$?
+                    if [[ $review_exit_code -eq 2 ]]; then
+                        task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                        log "DEBUG" "Added integration review (no automated review): $title"
+                    elif [[ $review_exit_code -eq 3 ]] || ! pr_meets_size_threshold "$number"; then
+                        task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                        log "DEBUG" "Added integration review (below size threshold): $title"
+                    else
+                        task_line=$(create_task_line_without_review "$pr" "integrations-review" "urgent-important")
+                        log "DEBUG" "Added integration review (review failed): $title"
+                    fi
+                fi
+                new_tasks+="$task_line"$'\n'
+            fi
+        done <<< "$(echo "$integration_prs" | jq -c '.[]' 2>/dev/null || true)"
+
+        # Send notifications for integration PRs
+        while IFS= read -r pr; do
+            local number title author url
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
+            author=$(echo "$pr" | jq -r '.author')
+            url=$(echo "$pr" | jq -r '.url')
+
+            if notification_already_sent "$number" "$TODAY"; then
+                log "DEBUG" "Notification already sent today for integration PR #$number - skipping"
+                continue
+            fi
+
+            local notification_title="🔧 Integration Review Needed"
+            local notification_message="$author: $title
 
 PR #$number requires your integration expertise.
 
 View: $url"
-        
-        if [[ "$SEND_NOTIFICATIONS" == "true" ]]; then
-            send_ntfy_notification "$notification_title" "$notification_message" "high" "integration,urgent"
-            record_notification_sent "$number" "$TODAY"
-            ((notifications_sent++))
-        else
-            log "INFO" "Would notify: $notification_title - $notification_message"
-        fi
-        
-        log "INFO" "Integration review needed: PR #$number by $author"
-    done <<< "$(echo "$notification_prs" | jq -c '.[]' 2>/dev/null || true)"
-    
+
+            if [[ "$SEND_NOTIFICATIONS" == "true" ]]; then
+                send_ntfy_notification "$notification_title" "$notification_message" "high" "integration,urgent"
+                record_notification_sent "$number" "$TODAY"
+                ((notifications_sent++))
+            else
+                log "INFO" "Would notify: $notification_title - $notification_message"
+            fi
+
+            log "INFO" "Integration review needed: PR #$number by $author"
+        done <<< "$(echo "$integration_prs" | jq -c '.[]' 2>/dev/null || true)"
+    else
+        log "INFO" "No new integration reviews requiring notification"
+    fi
+
+    # ========================================
+    # Process Riftwalkers Team PRs
+    # ========================================
+    local riftwalkers_prs
+    riftwalkers_prs=$(get_riftwalkers_reviews_for_notification)
+    log "DEBUG" "Riftwalkers PRs result (first 100 chars): $(echo "$riftwalkers_prs" | head -c 100)" >&2
+
+    if [[ "$riftwalkers_prs" != "[]" && -n "$riftwalkers_prs" ]]; then
+        local riftwalkers_count
+        riftwalkers_count=$(echo "$riftwalkers_prs" | jq 'length' 2>/dev/null || echo "0")
+        log "INFO" "Found $riftwalkers_count Riftwalkers PR(s) requiring notification"
+
+        # Add new Riftwalkers PRs to Code Reviews.md
+        while IFS= read -r pr; do
+            local url number title
+            url=$(echo "$pr" | jq -r '.url')
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
+
+            # Skip if already tracked or is an integration PR
+            if ! echo "$existing_urls" | grep -q "$url" && ! echo "$new_tasks" | grep -q "$url"; then
+                local task_line
+                if pr_meets_size_threshold "$number" && trigger_automated_review "$number" "$title"; then
+                    task_line=$(create_task_line_with_review "$pr" "riftwalkers-review" "urgent-important")
+                    log "DEBUG" "Added Riftwalkers review with automated review: $title"
+                else
+                    local review_exit_code=$?
+                    if [[ $review_exit_code -eq 2 ]]; then
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (no automated review): $title"
+                    elif [[ $review_exit_code -eq 3 ]] || ! pr_meets_size_threshold "$number"; then
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (below size threshold): $title"
+                    else
+                        task_line=$(create_task_line_without_review "$pr" "riftwalkers-review" "urgent-important")
+                        log "DEBUG" "Added Riftwalkers review (review failed): $title"
+                    fi
+                fi
+                new_tasks+="$task_line"$'\n'
+            fi
+        done <<< "$(echo "$riftwalkers_prs" | jq -c '.[]' 2>/dev/null || true)"
+
+        # Send notifications for Riftwalkers PRs
+        while IFS= read -r pr; do
+            local number title author url
+            number=$(echo "$pr" | jq -r '.number')
+            title=$(echo "$pr" | jq -r '.title')
+            author=$(echo "$pr" | jq -r '.author')
+            url=$(echo "$pr" | jq -r '.url')
+
+            if notification_already_sent "$number" "$TODAY"; then
+                log "DEBUG" "Notification already sent today for Riftwalkers PR #$number - skipping"
+                continue
+            fi
+
+            local notification_title="⚡ Riftwalkers Review Needed"
+            local notification_message="$author: $title
+
+PR #$number from your Riftwalkers teammate.
+
+View: $url"
+
+            if [[ "$SEND_NOTIFICATIONS" == "true" ]]; then
+                send_ntfy_notification "$notification_title" "$notification_message" "high" "riftwalkers,urgent"
+                record_notification_sent "$number" "$TODAY"
+                ((notifications_sent++))
+            else
+                log "INFO" "Would notify: $notification_title - $notification_message"
+            fi
+
+            log "INFO" "Riftwalkers review needed: PR #$number by $author"
+        done <<< "$(echo "$riftwalkers_prs" | jq -c '.[]' 2>/dev/null || true)"
+    else
+        log "INFO" "No new Riftwalkers reviews requiring notification"
+    fi
+
+    # ========================================
+    # Add all new tasks to file
+    # ========================================
+    if [[ -n "$new_tasks" ]]; then
+        add_tasks_to_file "$new_tasks"
+        log "INFO" "Added new priority team PRs to Code Reviews.md"
+    else
+        log "DEBUG" "No new priority team PRs to add to Code Reviews.md" >&2
+    fi
+
     if [[ $notifications_sent -gt 0 ]]; then
-        log "INFO" "Sent $notifications_sent new integration review notification(s)"
+        log "INFO" "Sent $notifications_sent new priority team review notification(s)"
     else
         log "INFO" "No new notifications sent (all PRs already notified today)"
     fi
-    
-    log "INFO" "Integration review check completed"
+
+    log "INFO" "Priority team review check completed"
 }
 
 # Parse command line arguments
