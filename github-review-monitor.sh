@@ -411,7 +411,7 @@ get_integration_reviews() {
         local number title author url updated
         number=$(echo "$pr" | jq -r '.number' 2>/dev/null || continue)
         title=$(echo "$pr" | jq -r '.title' 2>/dev/null || continue)
-        author=$(echo "$pr" | jq -r '.author.name // .author.login' 2>/dev/null || continue)
+        author=$(echo "$pr" | jq -r 'if (.author.name // "") == "" then .author.login else .author.name end' 2>/dev/null || continue)
         url=$(echo "$pr" | jq -r '.url' 2>/dev/null || continue)
         updated=$(echo "$pr" | jq -r '.updatedAt' 2>/dev/null || continue)
         
@@ -496,7 +496,7 @@ get_riftwalkers_reviews() {
         local number title author url updated
         number=$(echo "$pr" | jq -r '.number' 2>/dev/null || continue)
         title=$(echo "$pr" | jq -r '.title' 2>/dev/null || continue)
-        author=$(echo "$pr" | jq -r '.author.name // .author.login' 2>/dev/null || continue)
+        author=$(echo "$pr" | jq -r 'if (.author.name // "") == "" then .author.login else .author.name end' 2>/dev/null || continue)
         url=$(echo "$pr" | jq -r '.url' 2>/dev/null || continue)
         updated=$(echo "$pr" | jq -r '.updatedAt' 2>/dev/null || continue)
 
@@ -572,7 +572,7 @@ get_followup_reviews() {
         --state open \
         --search "mentions:$GITHUB_USER -author:$GITHUB_USER" \
         --json number,title,author,url,updatedAt,isDraft 2>/dev/null | \
-        jq 'map(select(.isDraft == false) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
+        jq 'map(select(.isDraft == false) | {number, title, author: (if (.author.name // "") == "" then .author.login else .author.name end), url, updated: .updatedAt})' 2>/dev/null || echo "[]"
 }
 
 # Get general backend reviews
@@ -600,13 +600,13 @@ get_general_reviews() {
         jq_filter='map(select(.isDraft == false) | select(
             (.reviewRequests[] | select(.__typename == "Team" and .slug == $team)) or
             (.reviewRequests[] | select(.__typename == "User" and .login == $user))
-        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})'
+        ) | select(.author.login == $user | not) | {number, title, author: (if (.author.name // "") == "" then .author.login else .author.name end), url, updated: .updatedAt})'
         echo "$raw_response" | jq --arg user "$GITHUB_USER" --arg team "$BACKEND_TEAM_SLUG" "$jq_filter" 2>/dev/null || echo "[]"
     else
         # If no backend team configured, only look for direct user review requests
         jq_filter='map(select(.isDraft == false) | select(
             (.reviewRequests[] | select(.__typename == "User" and .login == $user))
-        ) | select(.author.login == $user | not) | {number, title, author: (.author.name // .author.login), url, updated: .updatedAt})'
+        ) | select(.author.login == $user | not) | {number, title, author: (if (.author.name // "") == "" then .author.login else .author.name end), url, updated: .updatedAt})'
         echo "$raw_response" | jq --arg user "$GITHUB_USER" "$jq_filter" 2>/dev/null || echo "[]"
     fi
 }
