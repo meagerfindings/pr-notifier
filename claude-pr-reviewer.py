@@ -10,7 +10,9 @@ import sys
 import json
 import argparse
 import subprocess
+import signal
 import time
+import fcntl
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +20,8 @@ from datetime import datetime
 REPO = "CompanyCam/Company-Cam-API"
 OBSIDIAN_VAULT = "/Users/mat/git/Obsidian/CompanyCam Vault"
 REVIEW_DIR = f"{OBSIDIAN_VAULT}/Code Reviews/automated-reviews"
+LOCK_FILE = "/tmp/claude-pr-reviewer.lock"
+CLAUDE_PROCESS_TIMEOUT = 120  # 2 minutes per attempt
 
 # Exit codes
 EXIT_SUCCESS = 0  # At least one review generated and saved
@@ -78,39 +82,88 @@ def get_pr_files(pr_number):
         return None
 
 
+def kill_process_group(process):
+    """Kill an entire process group to ensure no orphaned children"""
+    if process is None:
+        return
+    try:
+        # Get the process group ID (same as PID when start_new_session=True)
+        pgid = os.getpgid(process.pid)
+        log("DEBUG", f"Killing process group {pgid}")
+        os.killpg(pgid, signal.SIGTERM)
+        # Give processes a moment to terminate gracefully
+        time.sleep(0.5)
+        # Force kill if still running
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # Already dead
+    except ProcessLookupError:
+        pass  # Process already dead
+    except Exception as e:
+        log("WARN", f"Error killing process group: {e}")
+
+
 def call_claude_code_cli(prompt, additional_context=""):
-    """Call Claude Code CLI for code review with exponential backoff retry"""
+    """Call Claude Code CLI for code review with exponential backoff retry.
+
+    Uses process groups to ensure proper cleanup of all child processes
+    on timeout or error.
+    """
     max_retries = 5
     base_delay = 1  # Start with 1 second
-    
+
     for attempt in range(max_retries):
+        process = None
         try:
             # Check if claude is available
             subprocess.run(["claude", "--version"], capture_output=True, check=True)
-            
+
             # Call claude directly with the prompt using -p flag
             # Limit tools to Read only for security - we just want analysis, not file changes
-            result = subprocess.run([
-                "claude",
-                "-p", prompt,
-                "--allowedTools", "Read",
-                "--model", "haiku"
-            ], capture_output=True, text=True, check=True, timeout=120)  # 2 minute timeout
-            
-            if result.stdout.strip():
+            # Use start_new_session=True to create a new process group for proper cleanup
+            process = subprocess.Popen(
+                [
+                    "claude",
+                    "-p", prompt,
+                    "--allowedTools", "Read",
+                    "--model", "haiku"
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True  # Creates new process group for clean termination
+            )
+
+            try:
+                stdout, stderr = process.communicate(timeout=CLAUDE_PROCESS_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                log("WARN", f"Claude process timed out after {CLAUDE_PROCESS_TIMEOUT}s, killing process group...")
+                kill_process_group(process)
+                process.wait()  # Reap the zombie
+                raise
+
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, "claude", stderr=stderr)
+
+            if stdout.strip():
                 if attempt > 0:
                     log("INFO", f"Claude Code CLI succeeded on attempt {attempt + 1}/{max_retries}")
                 else:
                     log("DEBUG", "Claude Code CLI completed successfully")
-                return result.stdout.strip()
+                return stdout.strip()
             else:
                 log("WARN", f"Claude Code CLI returned empty response on attempt {attempt + 1}/{max_retries}")
                 if attempt == max_retries - 1:  # Last attempt
                     return None
-        
+
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             error_msg = "claude CLI not found" if isinstance(e, FileNotFoundError) else f"claude CLI failed with exit code {e.returncode}"
-            
+
+            # Ensure cleanup on error
+            if process is not None:
+                kill_process_group(process)
+
             if attempt == max_retries - 1:  # Last attempt
                 log("ERROR", f"{error_msg}. All {max_retries} retry attempts exhausted.")
                 if hasattr(e, 'stderr') and e.stderr:
@@ -121,17 +174,22 @@ def call_claude_code_cli(prompt, additional_context=""):
                 delay = base_delay * (2 ** attempt)
                 log("WARN", f"{error_msg}. Retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                 time.sleep(delay)
-                
+
         except subprocess.TimeoutExpired:
+            # Process group already killed above, just handle retry logic
             if attempt == max_retries - 1:  # Last attempt
-                log("ERROR", f"Claude Code CLI timed out after 2 minutes. All {max_retries} retry attempts exhausted.")
+                log("ERROR", f"Claude Code CLI timed out after {CLAUDE_PROCESS_TIMEOUT}s. All {max_retries} retry attempts exhausted.")
                 return None
             else:
                 delay = base_delay * (2 ** attempt)
                 log("WARN", f"Claude Code CLI timed out. Retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                 time.sleep(delay)
-                
+
         except Exception as e:
+            # Ensure cleanup on any error
+            if process is not None:
+                kill_process_group(process)
+
             if attempt == max_retries - 1:  # Last attempt
                 log("ERROR", f"Error calling Claude Code CLI: {e}. All {max_retries} retry attempts exhausted.")
                 return None
@@ -139,7 +197,7 @@ def call_claude_code_cli(prompt, additional_context=""):
                 delay = base_delay * (2 ** attempt)
                 log("WARN", f"Error calling Claude Code CLI: {e}. Retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                 time.sleep(delay)
-    
+
     # This shouldn't be reached, but just in case
     return None
 
@@ -244,16 +302,64 @@ def save_review_to_obsidian(pr_number, content):
         log("ERROR", f"Failed to save review: {e}")
         return None
 
+def acquire_lock():
+    """Acquire an exclusive lock to prevent concurrent runs.
+
+    Returns the lock file handle if successful, None if another instance is running.
+    """
+    try:
+        lock_fd = open(LOCK_FILE, 'w')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Write PID for debugging
+        lock_fd.write(str(os.getpid()))
+        lock_fd.flush()
+        log("DEBUG", f"Acquired lock (PID {os.getpid()})")
+        return lock_fd
+    except (IOError, OSError) as e:
+        if e.errno in (11, 35):  # EAGAIN or EWOULDBLOCK
+            log("WARN", "Another instance is already running, exiting")
+            return None
+        raise
+
+
+def release_lock(lock_fd):
+    """Release the exclusive lock"""
+    if lock_fd:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+            os.unlink(LOCK_FILE)
+            log("DEBUG", "Released lock")
+        except Exception as e:
+            log("WARN", f"Error releasing lock: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate automated code reviews for GitHub PRs")
     parser.add_argument("pr_number", type=int, help="GitHub PR number")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    
+
     args = parser.parse_args()
-    
+
     if args.verbose:
         log("DEBUG", f"Starting review for PR #{args.pr_number}")
+
+    # Acquire lock to prevent concurrent runs
+    lock_fd = acquire_lock()
+    if lock_fd is None:
+        return EXIT_OTHER_ERROR  # Another instance running
+
+    try:
+        return _main_impl(args)
+    finally:
+        release_lock(lock_fd)
+
+
+def _main_impl(args):
+    """Main implementation, called after lock is acquired"""
+    if args.verbose:
+        log("DEBUG", f"Processing review for PR #{args.pr_number}")
     
     # Get PR details
     pr_details = get_pr_details(args.pr_number)
