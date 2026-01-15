@@ -770,6 +770,10 @@ trigger_automated_review() {
     local pr_number="$1"
     local pr_title="$2"
     
+    # DISABLED: Automated reviews are temporarily disabled
+    log "DEBUG" "Automated reviews disabled - skipping PR #$pr_number"
+    return 3  # Return 3 to indicate skipped (same as below size threshold)
+    
     if [[ "$DRY_RUN" == "true" ]]; then
         log "INFO" "DRY RUN: Would trigger automated review for PR #$pr_number"
         return 0
